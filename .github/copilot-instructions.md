@@ -4,3 +4,4 @@
 - The venv already exists, so do not create a new one.
 - Use `python` to refer to the Python interpreter in the virtual environment.
 - Prefer workspace-local tools and dependencies from `.venv`.
+- This project has not been implemented yet, so do not worry about backwards compatibility.

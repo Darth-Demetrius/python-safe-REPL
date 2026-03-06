@@ -3,7 +3,8 @@ name = "safe-repl"
 version = "0.1.0"
 description = "Safe REPL with tiered permission levels for restricted Python execution"
 authors = ["Your Name <you@example.com>"]
-packages = [{ include = "safe_repl.py" }]
+readme = "README.md"
+packages = [{ include = "safe_repl" }]
 
 [tool.poetry.dependencies]
 python = ">=3.10,<4.0"

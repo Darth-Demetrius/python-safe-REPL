@@ -1,13 +1,21 @@
+import argparse
 import math
+
 import pytest
 
+from safe_repl.imports import (
+    SafeReplCliArgError,
+    SafeReplImportError,
+    parse_import_spec,
+    validate_cli_args,
+)
 from safe_repl import (
-    safe_exec,
-    set_active_permissions,
-    set_memory_limit_bytes,
-    set_timeout_seconds,
-    Permissions,
     PermissionLevel,
+    Permissions,
+    SafeReplCliArgError,
+    SafeReplImportError,
+    SafeSession,
+    safe_exec,
 )
 
 
@@ -20,268 +28,311 @@ def activate(level: PermissionLevel, imports: dict[str, object] | None = None) -
         block_nodes=set(),
         imports=imports or {},
     )
-    set_active_permissions(perms)
     return perms
 
 
-def safe_exec_limited(line: str, variables: dict[str, object]) -> object | None:
-    """Helper to call safe_exec with LIMITED permission level (used for most tests)."""
-    # Build globals with math module available (note: tests use math.sqrt() syntax)
-    activate(PermissionLevel.LIMITED, {"math": math})
-    return safe_exec(line, variables)
+def run_limited(code: str, variables: dict[str, object]) -> object | None:
+    perms = activate(PermissionLevel.LIMITED, {"math": math})
+    return safe_exec(code, variables, perms=perms)
 
 
-def test_safe_exec_basic_operators() -> None:
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("2 + 3 * 4", 14),
+        ("(2 < 3) and (4 != 5)", True),
+        ("abs(-3)", 3),
+        ("max(1, 5, 2)", 5),
+        ("round(3.14159, 2)", 3.14),
+        ("math.sqrt(16)", 4.0),
+        ("math.floor(3.7)", 3),
+    ],
+)
+def test_limited_allows_core_operations(code: str, expected: object) -> None:
     variables: dict[str, object] = {}
-    result = safe_exec_limited("2 + 3 * 4", variables)
-    assert result == 14
-    assert safe_exec_limited("(2 < 3) and (4 != 5)", variables) is True
+    assert run_limited(code, variables) == expected
 
 
-def test_safe_exec_assignment_persists_between_calls() -> None:
+def test_assignment_persists_between_calls() -> None:
     variables: dict[str, object] = {}
-    assert safe_exec_limited("x = 5", variables) is None
-    assert safe_exec_limited("x += 2", variables) is None
-    assert safe_exec_limited("x", variables) == 7
+    assert run_limited("x = 5", variables) is None
+    assert run_limited("x += 2", variables) is None
+    assert run_limited("x", variables) == 7
 
 
-def test_safe_exec_allows_whitelisted_builtin_calls() -> None:
+def test_safe_session_exec_persists_state() -> None:
+    perms = activate(PermissionLevel.LIMITED, {"math": math})
+    session = SafeSession(perms)
+
+    assert session.exec("x = 10") is None
+    assert session.exec("x += 5") is None
+    assert session.exec("x") == 15
+
+
+def test_safe_session_reset_clears_user_vars() -> None:
+    perms = activate(PermissionLevel.LIMITED, {"math": math})
+    session = SafeSession(perms)
+
+    session.exec("x = 10")
+    session.reset()
+    with pytest.raises(NameError, match="x"):
+        session.exec("x")
+
+
+def test_safe_session_constructor_defaults() -> None:
+    session = SafeSession(Permissions(base_perms=PermissionLevel.MINIMUM))
+    assert session.perms.level == PermissionLevel.MINIMUM
+    assert session.user_vars == {}
+
+
+def test_safe_session_constructor_with_imports() -> None:
+    session = SafeSession(Permissions(base_perms=PermissionLevel.LIMITED, imports={"math": math}))
+    assert session.exec("math.sqrt(9)") == 3.0
+
+
+def test_safe_session_from_cli_args_uses_default_math_imports() -> None:
+    args = argparse.Namespace(
+        level="LIMITED",
+        imports=None,
+        allow_functions=None,
+        block_functions=None,
+        allow_nodes=None,
+        block_nodes=None,
+        list_functions=False,
+        list_nodes=False,
+    )
+    session = SafeSession.from_cli_args(args)
+    assert session.exec("sqrt(16)") == 4.0
+
+
+def test_safe_session_from_cli_args_with_explicit_import() -> None:
+    args = argparse.Namespace(
+        level="LIMITED",
+        imports=["json as j"],
+        allow_functions=None,
+        block_functions=None,
+        allow_nodes=None,
+        block_nodes=None,
+        list_functions=False,
+        list_nodes=False,
+    )
+    session = SafeSession.from_cli_args(args)
+    assert session.exec("j.dumps({'x': 1})") == '{"x": 1}'
+
+
+@pytest.mark.parametrize(
+    ("code", "error"),
+    [
+        ("open('x.txt')", "is not allowed"),
+        ("math._floor(3.7)", "Private methods are not allowed"),
+        ("'abc'.__class__", "Private attributes are not allowed"),
+    ],
+)
+def test_limited_blocks_unsafe_calls_and_attributes(code: str, error: str) -> None:
     variables: dict[str, object] = {}
-    assert safe_exec_limited("abs(-3)", variables) == 3
-    assert safe_exec_limited("max(1, 5, 2)", variables) == 5
-    assert safe_exec_limited("round(3.14159, 2)", variables) == 3.14
+    with pytest.raises(ValueError, match=error):
+        run_limited(code, variables)
 
 
-def test_safe_exec_allows_math_module_calls() -> None:
+def test_limited_allows_unpacking_targets() -> None:
     variables: dict[str, object] = {}
-    assert safe_exec_limited("math.sqrt(16)", variables) == 4.0
-    assert safe_exec_limited("math.floor(3.7)", variables) == 3
+    assert run_limited("a, b = (1, 2)", variables) is None
+    assert run_limited("a", variables) == 1
+    assert run_limited("b", variables) == 2
 
 
-def test_safe_exec_blocks_other_builtin_calls() -> None:
+def test_limited_allows_subscript_and_slice_assignment_for_existing_variable() -> None:
     variables: dict[str, object] = {}
-    with pytest.raises(ValueError, match="is not allowed"):
-        safe_exec_limited("open('x.txt')", variables)
+    assert run_limited("arr = [1, 2, 3]", variables) is None
+    assert run_limited("arr[0] = 9", variables) is None
+    assert run_limited("arr[1:3] = [7, 8]", variables) is None
+    assert run_limited("arr", variables) == [9, 7, 8]
 
 
-def test_safe_exec_blocks_unsafe_math_calls() -> None:
-    variables: dict[str, object] = {}
-    with pytest.raises(ValueError, match="Private methods are not allowed"):
-        safe_exec_limited("math._floor(3.7)", variables)
-
-
-def test_safe_exec_blocks_unsafe_attribute_access() -> None:
-    variables: dict[str, object] = {}
-    with pytest.raises(ValueError, match="Private attributes are not allowed"):
-        safe_exec_limited("'abc'.__class__", variables)
-
-
-def test_safe_exec_allows_unpacking_targets() -> None:
-    variables: dict[str, object] = {}
-    assert safe_exec_limited("a, b = (1, 2)", variables) is None
-    assert safe_exec_limited("a", variables) == 1
-    assert safe_exec_limited("b", variables) == 2
-
-
-def test_safe_exec_allows_subscript_and_slice_for_existing_variables() -> None:
-    variables: dict[str, object] = {}
-    assert safe_exec_limited("arr = [1, 2, 3]", variables) is None
-    assert safe_exec_limited("arr[0] = 9", variables) is None
-    assert safe_exec_limited("arr[1:3] = [7, 8]", variables) is None
-    assert safe_exec_limited("arr", variables) == [9, 7, 8]
-
-
-def test_safe_exec_blocks_subscript_assignment_for_unknown_root_variable() -> None:
+def test_limited_blocks_subscript_assignment_for_unknown_variable() -> None:
     variables: dict[str, object] = {}
     with pytest.raises(
         ValueError,
         match="Subscript/slice assignment is only allowed on existing user variables",
     ):
-        safe_exec_limited("arr[0] = 1", variables)
+        run_limited("arr[0] = 1", variables)
 
 
 def test_minimum_blocks_all_attribute_access() -> None:
-    """MINIMUM mode should block all attribute access (even on literals)."""
     variables: dict[str, object] = {}
-    activate(PermissionLevel.MINIMUM)
-    # String literals with method calls should be blocked
+    perms = activate(PermissionLevel.MINIMUM)
     with pytest.raises(ValueError, match="Attribute access not allowed"):
-        safe_exec("'hello'.upper()", variables)
+        safe_exec("'hello'.upper()", variables, perms=perms)
 
 
-def test_minimum_blocks_unpacking_assignments() -> None:
-    """MINIMUM mode should block unpacking assignments for extra safety."""
+def test_minimum_blocks_unpacking_but_allows_simple_assignment() -> None:
     variables: dict[str, object] = {}
-    activate(PermissionLevel.MINIMUM)
-    # Unpacking should be blocked in MINIMUM
+    perms = activate(PermissionLevel.MINIMUM)
     with pytest.raises(ValueError, match="Unpacking assignment is not allowed"):
-        safe_exec("a, b = 1, 2", variables)
+        safe_exec("a, b = 1, 2", variables, perms=perms)
 
-    # Simple assignment should still work
-    result = safe_exec("x = 5", variables)
-    assert result is None
+    assert safe_exec("x = 5", variables, perms=perms) is None
     assert variables["x"] == 5
 
 
 def test_limited_enforces_timeout() -> None:
     variables: dict[str, object] = {}
-    original_timeouts = Permissions.TIMEOUT_SECONDS_BY_LEVEL
+    perms = activate(PermissionLevel.LIMITED)
+    original_timeout = perms.timeout_seconds
     try:
-        set_timeout_seconds(PermissionLevel.LIMITED, 0.01)
-        activate(PermissionLevel.LIMITED)
+        perms.set_timeout_seconds(0.01)
         with pytest.raises(TimeoutError, match="Execution timed out"):
-            safe_exec("while True:\n    pass", variables)
+            safe_exec("while True:\n    pass", variables, perms=perms)
     finally:
-        Permissions.TIMEOUT_SECONDS_BY_LEVEL = original_timeouts
+        perms.set_timeout_seconds(original_timeout)
 
 
 def test_limited_enforces_memory_limit() -> None:
     variables: dict[str, object] = {}
-    original_limits = Permissions.MEMORY_LIMIT_BYTES_BY_LEVEL
+    perms = activate(PermissionLevel.LIMITED)
+    original_limit = perms.memory_limit_bytes
     try:
-        set_memory_limit_bytes(PermissionLevel.LIMITED, 64 * 1024)
-        activate(PermissionLevel.LIMITED)
+        perms.set_memory_limit_bytes(64 * 1024)
         with pytest.raises((MemoryError, RuntimeError)):
-            safe_exec("x = list(range(200000))", variables)
+            safe_exec("x = list(range(200000))", variables, perms=perms)
     finally:
-        Permissions.MEMORY_LIMIT_BYTES_BY_LEVEL = original_limits
+        perms.set_memory_limit_bytes(original_limit)
 
 
 def test_limited_allows_attributes_on_literals() -> None:
-    """LIMITED+ mode should allow attribute access on literals but not variables."""
     variables: dict[str, object] = {}
-    activate(PermissionLevel.LIMITED)
-    # String literal methods should work
-    result = safe_exec("'hello'.upper()", variables)
-    assert result == "HELLO"
-
-    # List literal methods should work
-    result = safe_exec("[1, 2, 3].count(2)", variables)
-    assert result == 1
+    perms = activate(PermissionLevel.LIMITED)
+    assert safe_exec("'hello'.upper()", variables, perms=perms) == "HELLO"
+    assert safe_exec("[1, 2, 3].count(2)", variables, perms=perms) == 1
 
 
 def test_limited_blocks_attributes_on_user_variables() -> None:
-    """LIMITED+ mode should block attribute access on user variables to prevent probing."""
     variables: dict[str, object] = {"msg": "hello"}
-    activate(PermissionLevel.LIMITED)
-    # Accessing methods on user variables should be blocked
+    perms = activate(PermissionLevel.LIMITED)
     with pytest.raises(ValueError, match="Attribute access not allowed"):
-        safe_exec("msg.upper()", variables)
+        safe_exec("msg.upper()", variables, perms=perms)
+
+
+def test_permissive_allows_attributes_on_user_variables() -> None:
+    variables: dict[str, object] = {"msg": "hello"}
+    perms = activate(PermissionLevel.PERMISSIVE)
+    assert safe_exec("msg.upper()", variables, perms=perms) == "HELLO"
+
+
+def test_permissive_allows_attributes_on_locals_defined_in_snippet() -> None:
+    variables: dict[str, object] = {}
+    perms = activate(PermissionLevel.PERMISSIVE)
+    assert safe_exec("msg = 'hello'", variables, perms=perms) is None
+    assert safe_exec("msg.upper()", variables, perms=perms) == "HELLO"
 
 
 def test_limited_allows_function_definition() -> None:
-    """LIMITED mode should allow def and return."""
     variables: dict[str, object] = {}
-    activate(PermissionLevel.LIMITED)
-
-    safe_exec("""
-def add(a, b):
-    return a + b
-""".strip(), variables)
-    result = safe_exec("add(2, 3)", variables)
-    assert result == 5
+    perms = activate(PermissionLevel.LIMITED)
+    safe_exec("def add(a, b):\n    return a + b", variables, perms=perms)
+    assert safe_exec("add(2, 3)", variables, perms=perms) == 5
 
 
-def test_limited_blocks_class_definition() -> None:
-    """LIMITED mode should block class definitions."""
+@pytest.mark.parametrize(
+    "code",
+    [
+        "class A:\n    pass",
+        "try:\n    x = 1\nexcept Exception:\n    x = 2",
+    ],
+)
+def test_limited_blocks_class_and_exception_handling(code: str) -> None:
     variables: dict[str, object] = {}
-    activate(PermissionLevel.LIMITED)
-
+    perms = activate(PermissionLevel.LIMITED)
     with pytest.raises(ValueError, match="Unsupported syntax"):
-        safe_exec("""
-class A:
-    pass
-""".strip(), variables)
-
-
-def test_limited_blocks_try_except() -> None:
-    """LIMITED mode should block exception handling."""
-    variables: dict[str, object] = {}
-    activate(PermissionLevel.LIMITED)
-
-    with pytest.raises(ValueError, match="Unsupported syntax"):
-        safe_exec("""
-try:
-    x = 1
-except Exception:
-    x = 2
-""".strip(), variables)
+        safe_exec(code, variables, perms=perms)
 
 
 def test_permissive_allows_class_and_try() -> None:
-    """PERMISSIVE mode should allow class definitions and exception handling."""
     variables: dict[str, object] = {}
-    activate(PermissionLevel.PERMISSIVE)
-
-    safe_exec("""
-class A:
-    pass
-
-try:
-    y = 1
-except Exception:
-    y = 2
-""".strip(), variables)
-    result = safe_exec("y", variables)
-    assert result == 1
+    perms = activate(PermissionLevel.PERMISSIVE)
+    safe_exec("class A:\n    pass\n\ntry:\n    y = 1\nexcept Exception:\n    y = 2", variables, perms=perms)
+    assert safe_exec("y", variables, perms=perms) == 1
     assert "A" in variables
 
 
 def test_permissive_blocks_imports() -> None:
-    """PERMISSIVE mode should block import statements."""
     variables: dict[str, object] = {}
-    activate(PermissionLevel.PERMISSIVE)
-
+    perms = activate(PermissionLevel.PERMISSIVE)
     with pytest.raises(ValueError, match="Unsupported syntax"):
-        safe_exec("import math", variables)
-
-
-def test_unsupervised_allows_imports() -> None:
-    """UNSUPERVISED mode should allow import statements."""
-    variables: dict[str, object] = {}
-    activate(PermissionLevel.UNSUPERVISED)
-
-    safe_exec("import math", variables)
-    result = safe_exec("math.sqrt(9)", variables)
-    assert result == 3.0
-
-
-def test_unsupervised_blocks_eval() -> None:
-    """UNSUPERVISED mode should still block eval/exec."""
-    variables: dict[str, object] = {}
-    activate(PermissionLevel.UNSUPERVISED)
-
-    with pytest.raises(ValueError, match="is not allowed"):
-        safe_exec("eval('2 + 2')", variables)
+        safe_exec("import math", variables, perms=perms)
 
 
 def test_permissive_allows_global_and_nonlocal() -> None:
-    """PERMISSIVE mode should allow global and nonlocal statements."""
     variables: dict[str, object] = {}
     perms = activate(PermissionLevel.PERMISSIVE)
-
-    safe_exec("""
-x = 0
-def outer():
-    y = 1
-    def inner():
-        nonlocal y
-        global x
-        y = 2
-        x = 3
-    inner()
-    return y
-""".strip(), variables)
-    result = safe_exec("outer()", variables)
-    assert result == 2
+    safe_exec(
+        "x = 0\ndef outer():\n    y = 1\n    def inner():\n        nonlocal y\n        global x\n        y = 2\n        x = 3\n    inner()\n    return y",
+        variables,
+        perms=perms,
+    )
+    assert safe_exec("outer()", variables, perms=perms) == 2
     assert perms.globals_dict["x"] == 3
 
 
-def test_unsupervised_allows_from_import() -> None:
-    """UNSUPERVISED mode should allow from-import statements."""
+def test_unsupervised_allows_imports_and_from_import() -> None:
     variables: dict[str, object] = {}
-    activate(PermissionLevel.UNSUPERVISED)
+    perms = activate(PermissionLevel.UNSUPERVISED)
+    safe_exec("import math", variables, perms=perms)
+    safe_exec("from math import sqrt", variables, perms=perms)
+    assert safe_exec("math.sqrt(9)", variables, perms=perms) == 3.0
+    assert safe_exec("sqrt(16)", variables, perms=perms) == 4
 
-    safe_exec("from math import sqrt", variables)
-    result = safe_exec("sqrt(16)", variables)
-    assert result == 4
+
+def test_unsupervised_still_blocks_eval() -> None:
+    variables: dict[str, object] = {}
+    perms = activate(PermissionLevel.UNSUPERVISED)
+    with pytest.raises(ValueError, match="is not allowed"):
+        safe_exec("eval('2 + 2')", variables, perms=perms)
+
+
+def test_permission_level_invalid_value_warns_and_defaults_to_minimum() -> None:
+    with pytest.warns(UserWarning, match="Invalid permission level"):
+        level = PermissionLevel("not-a-level")
+    assert level == PermissionLevel.MINIMUM
+
+
+def test_parse_import_spec_raises_library_error() -> None:
+    with pytest.raises(SafeReplImportError, match="Failed to import"):
+        parse_import_spec("definitely_not_a_real_module_xyz")
+
+
+def test_validate_cli_args_raises_library_error_for_unknown_node() -> None:
+    args = argparse.Namespace(allow_nodes=["DefinitelyNotAnAstNode"], block_nodes=None)
+    with pytest.raises(SafeReplCliArgError, match="Unknown node type"):
+        validate_cli_args(args)
+
+
+def test_typed_exceptions_reexported_from_top_level() -> None:
+    assert SafeReplImportError.__name__ == "SafeReplImportError"
+    assert SafeReplCliArgError.__name__ == "SafeReplCliArgError"
+
+
+def test_repl_show_details_default_repeats_for_limited(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    session = SafeSession(activate(PermissionLevel.LIMITED))
+    monkeypatch.setattr("builtins.input", lambda _prompt: "quit")
+
+    session.repl(show_details=True)
+    first_output = capsys.readouterr().out
+    session.repl(show_details=True)
+    second_output = capsys.readouterr().out
+
+    assert "Builtins:" in first_output
+    assert "Builtins:" in second_output
+
+
+def test_repl_show_details_default_once_for_permissive(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    session = SafeSession(activate(PermissionLevel.PERMISSIVE))
+    monkeypatch.setattr("builtins.input", lambda _prompt: "quit")
+
+    session.repl(show_details=True)
+    first_output = capsys.readouterr().out
+    session.repl(show_details=True)
+    second_output = capsys.readouterr().out
+
+    assert "Builtins:" in first_output
+    assert "Builtins:" not in second_output

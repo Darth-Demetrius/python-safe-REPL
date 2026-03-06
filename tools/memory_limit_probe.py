@@ -5,7 +5,9 @@ Run: ./.venv/bin/python tools/memory_limit_probe.py
 
 from __future__ import annotations
 
+import argparse
 import tracemalloc
+from typing import Callable
 
 try:
     import resource
@@ -64,8 +66,30 @@ def _report_peak(label: str, limit_bytes: int) -> None:
     )
 
 
+def _run_probe(title: str, metric_label: str, allocator: Callable[[], object], limit_bytes: int) -> None:
+    print(title)
+    try:
+        data = allocator()
+        _report_peak(metric_label, limit_bytes)
+        del data
+    except MemoryError as exc:
+        print(f"MemoryError: {exc}")
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Probe memory behavior under RLIMIT + tracemalloc.")
+    parser.add_argument(
+        "--limit-bytes",
+        type=int,
+        default=1024,
+        help="Soft memory limit in bytes to apply before probes (default: 1024).",
+    )
+    return parser.parse_args()
+
+
 def main() -> int:
-    limit_bytes = 1024
+    args = _parse_args()
+    limit_bytes = args.limit_bytes
     print(f"Setting memory limit to {limit_bytes} bytes")
 
     previous_as, previous_data = _apply_limits(limit_bytes)
@@ -73,32 +97,24 @@ def main() -> int:
     tracemalloc.reset_peak()
 
     try:
-        # Pattern 1: big list of ints
-        print("Allocating list of 10 million ints...")
-        try:
-            data = list(range(10_000_000))
-            _report_peak("list(range)", limit_bytes)
-            del data
-        except MemoryError as exc:
-            print(f"MemoryError (list): {exc}")
-
-        # Pattern 2: big list of strings
-        print("Allocating list of 100k strings (1KB each)...")
-        try:
-            data = [str(i).zfill(1024) for i in range(100_000)]
-            _report_peak("list(strings)", limit_bytes)
-            del data
-        except MemoryError as exc:
-            print(f"MemoryError (strings): {exc}")
-
-        # Pattern 3: bytearray
-        print("Allocating 128MB bytearray...")
-        try:
-            data = bytearray(128 * 1024 * 1024)
-            _report_peak("bytearray", limit_bytes)
-            del data
-        except MemoryError as exc:
-            print(f"MemoryError (bytearray): {exc}")
+        _run_probe(
+            "Allocating list of 10 million ints...",
+            "list(range)",
+            lambda: list(range(10_000_000)),
+            limit_bytes,
+        )
+        _run_probe(
+            "Allocating list of 100k strings (1KB each)...",
+            "list(strings)",
+            lambda: [str(i).zfill(1024) for i in range(100_000)],
+            limit_bytes,
+        )
+        _run_probe(
+            "Allocating 128MB bytearray...",
+            "bytearray",
+            lambda: bytearray(128 * 1024 * 1024),
+            limit_bytes,
+        )
 
     finally:
         tracemalloc.stop()

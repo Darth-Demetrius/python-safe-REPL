@@ -1,23 +1,19 @@
 {
-	"folders": [
-		{
-			"path": "."
-		}
-	],
-	"settings": {
-		"python.terminal.activateEnvironment": true,
-		"chat.tools.terminal.autoApprove": {
-
-			"/bin/python": true,
-			"timeout": true,
-			"true": true,
-			"which": true
-		},
-		"terminal.integrated.shellIntegration.environmentReporting": true,
-		"launch": {
-
-			"configurations": [],
-			"compounds": []
-		}
-	}
+    "folders": [
+        {
+            "path": "."
+        }
+    ],
+    "settings": {
+        "chat.tools.terminal.autoApprove": {
+            "timeout": true,
+            "true": true,
+            "which": true
+        },
+        "terminal.integrated.shellIntegration.environmentReporting": true,
+        "launch": {
+            "configurations": [],
+            "compounds": []
+        }
+    }
 }
