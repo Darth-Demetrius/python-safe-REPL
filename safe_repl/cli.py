@@ -3,6 +3,7 @@
 import argparse
 import sys
 
+from .execution import ExecutionMode
 from .imports import SafeReplCliArgError, SafeReplImportError, validate_cli_args
 from .session import SafeSession
 
@@ -16,6 +17,7 @@ def _build_parser() -> argparse.ArgumentParser:
   %(prog)s                               # Limited permission level (default)
   %(prog)s --level MINIMUM               # Restrict to arithmetic only
   %(prog)s --level PERMISSIVE            # Allow classes and exception handling
+  %(prog)s --execution-mode process      # Run snippets in isolated subprocesses
   %(prog)s --level UNSUPERVISED          # Allow imports and most builtins
   %(prog)s --allow-functions map filter  # Add functions to default set
   %(prog)s --list-functions              # Show allowed functions and exit
@@ -58,6 +60,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Whether startup details print once per session (default: false for "
             "MINIMUM/LIMITED, true for PERMISSIVE/UNSUPERVISED)."
+        ),
+    )
+    parser.add_argument(
+        "--execution-mode",
+        choices=ExecutionMode.choices(),
+        default=ExecutionMode.default().value,
+        help=(
+            "Execution backend. 'process' (default) runs snippets in isolated "
+            "subprocesses; 'in-process' runs in the current interpreter."
         ),
     )
     return parser

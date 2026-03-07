@@ -9,6 +9,7 @@ Public API is re-exported from focused internal modules:
 
 from .cli import main
 from .engine import safe_exec
+from .execution import ExecutionMode, safe_exec_process_isolated, supports_process_isolation
 from .imports import (
     SafeReplCliArgError,
     SafeReplImportError,
@@ -21,8 +22,11 @@ from .session import SafeSession, repl
 __all__ = [
     "PermissionLevel",
     "Permissions",
+    "ExecutionMode",
     "SafeSession",
     "safe_exec",
+    "safe_exec_process_isolated",
+    "supports_process_isolation",
     "repl",
     "main",
     "SafeReplImportError",
