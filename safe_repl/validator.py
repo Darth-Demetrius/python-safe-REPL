@@ -32,11 +32,12 @@ def can_access_attribute(node: ast.expr, allowed_names: set[str], perms: Permiss
         return False
     if is_literal_value(node):
         return True
-    if isinstance(node, ast.Name):
-        if node.id in perms.imported_symbols:
-            return True
-        if perms.level >= PermissionLevel.PERMISSIVE and node.id in allowed_names:
-            return True
+    if not isinstance(node, ast.Name):
+        return False
+    if node.id in perms.imported_symbols:
+        return True
+    if perms.level >= PermissionLevel.PERMISSIVE and node.id in allowed_names:
+        return True
     return False
 
 
@@ -91,14 +92,8 @@ def validate_call(call: ast.Call, allowed_names: set[str], perms: Permissions) -
         raise ValueError("Unsupported call target.")
 
 
-def validate_ast(
-    tree: ast.AST,
-    user_vars: dict[str, object],
-    allowed_names: set[str],
-    perms: Permissions,
-) -> None:
-    """Validate parsed AST against node, identifier, call, and assignment rules."""
-    # Names introduced in this snippet are considered allowed call/attribute roots.
+def _collect_defined_and_assigned_names(tree: ast.AST) -> set[str]:
+    """Collect names introduced by this snippet for call/attribute validation."""
     defined_names = {
         node.name
         for node in ast.walk(tree)
@@ -109,26 +104,61 @@ def validate_ast(
         for node in ast.walk(tree)
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
     }
-    allowed_names |= defined_names | assigned_names
+    return defined_names | assigned_names
 
-    # Enforce policy constraints node-by-node.
+
+def _validate_attribute_node(node: ast.Attribute, allowed_names: set[str], perms: Permissions) -> None:
+    """Validate one attribute node against private-name and access rules."""
+    if is_unsafe_attribute(node.attr):
+        raise ValueError("Private attributes are not allowed.")
+    if not can_access_attribute(node.value, allowed_names, perms):
+        raise ValueError("Attribute access not allowed at this permission level.")
+
+
+def _validate_tree_node(
+    node: ast.AST,
+    *,
+    user_vars: dict[str, object],
+    allowed_names: set[str],
+    perms: Permissions,
+) -> None:
+    """Validate one AST node against policy, assignment, and call constraints."""
+    if not isinstance(node, perms.allowed_node_tuple):
+        raise ValueError("Unsupported syntax.")
+
+    if isinstance(node, ast.Name) and node.id == "__builtins__":
+        raise ValueError("Unsupported identifier.")
+
+    if isinstance(node, ast.Attribute):
+        _validate_attribute_node(node, allowed_names, perms)
+        return
+
+    if isinstance(node, ast.Assign):
+        for target in node.targets:
+            validate_assignment_target(target, user_vars, perms)
+        return
+
+    if isinstance(node, ast.AugAssign):
+        validate_assignment_target(node.target, user_vars, perms)
+        return
+
+    if isinstance(node, ast.Call):
+        validate_call(node, allowed_names, perms)
+
+
+def validate_ast(
+    tree: ast.AST,
+    user_vars: dict[str, object],
+    allowed_names: set[str],
+    perms: Permissions,
+) -> None:
+    """Validate parsed AST against node, identifier, call, and assignment rules."""
+    allowed_names |= _collect_defined_and_assigned_names(tree)
+
     for node in ast.walk(tree):
-        if not isinstance(node, perms.allowed_node_tuple):
-            raise ValueError("Unsupported syntax.")
-
-        if isinstance(node, ast.Name) and node.id == "__builtins__":
-            raise ValueError("Unsupported identifier.")
-
-        if isinstance(node, ast.Attribute):
-            if is_unsafe_attribute(node.attr):
-                raise ValueError("Private attributes are not allowed.")
-            if not can_access_attribute(node.value, allowed_names, perms):
-                raise ValueError("Attribute access not allowed at this permission level.")
-
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                validate_assignment_target(target, user_vars, perms)
-        elif isinstance(node, ast.AugAssign):
-            validate_assignment_target(node.target, user_vars, perms)
-        elif isinstance(node, ast.Call):
-            validate_call(node, allowed_names, perms)
+        _validate_tree_node(
+            node,
+            user_vars=user_vars,
+            allowed_names=allowed_names,
+            perms=perms,
+        )

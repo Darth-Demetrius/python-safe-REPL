@@ -1,7 +1,7 @@
-"""Permission model and policy configuration for safe_repl.
+"""Permission model and runtime policy objects for safe_repl.
 
-Defines permission levels, baseline allow/block tables, and the `Permissions`
-object used by execution and validation layers.
+This module defines behavior-oriented policy types (`PermissionLevel`,
+`Permissions`) while static level tables live in `safe_repl.policy_tables`.
 """
 
 import ast
@@ -9,180 +9,19 @@ import builtins
 from enum import IntEnum
 import warnings
 
-
-# Builtin capability groups by feature area.
-_CORE_FUNCTIONS = {
-    "abs",
-    "round",
-    "min",
-    "max",
-    "sum",
-    "pow",
-    "divmod",
-    "int",
-    "float",
-    "str",
-    "bool",
-    "chr",
-    "ord",
-    "hex",
-    "oct",
-    "bin",
-}
-
-_COLLECTION_FUNCTIONS = {
-    "list",
-    "tuple",
-    "dict",
-    "set",
-    "bytes",
-    "bytearray",
-    "frozenset",
-    "len",
-    "range",
-    "enumerate",
-    "zip",
-    "reversed",
-    "sorted",
-    "iter",
-    "next",
-}
-
-_UTILITY_FUNCTIONS = {"all", "any", "isinstance", "type", "repr", "ascii", "format", "slice"}
-_FUNCTIONAL_FUNCTIONS = {"map", "filter"}
-
-# AST capability groups by language feature area.
-_CORE_NODES = {
-    ast.Module,
-    ast.Expression,
-    ast.Expr,
-    ast.Constant,
-    ast.Tuple,
-    ast.List,
-    ast.Set,
-    ast.Dict,
-    ast.Name,
-    ast.Load,
-    ast.Store,
-    ast.Subscript,
-    ast.Slice,
-    ast.Attribute,
-    ast.Assign,
-    ast.AugAssign,
-    ast.Call,
-    ast.keyword,
-    ast.Starred,
-    ast.BinOp,
-    ast.UnaryOp,
-    ast.BoolOp,
-    ast.Compare,
-    ast.operator,
-    ast.unaryop,
-    ast.boolop,
-    ast.cmpop,
-    ast.IfExp,
-    ast.NamedExpr,
-    ast.If,
-    ast.Assert,
-}
-
-_ITERATION_NODES = {
-    ast.For,
-    ast.While,
-    ast.Break,
-    ast.Continue,
-    ast.Pass,
-    ast.ListComp,
-    ast.SetComp,
-    ast.DictComp,
-    ast.GeneratorExp,
-    ast.comprehension,
-    ast.Lambda,
-    ast.arguments,
-    ast.arg,
-}
-
-_FUNCTION_DEF_NODES = {ast.FunctionDef, ast.Return}
-_CLASS_NODES = {ast.ClassDef}
-_SCOPE_NODES = {ast.Global, ast.Nonlocal}
-_EXCEPTION_NODES = {ast.Try, ast.Raise, ast.With, ast.ExceptHandler}
-_IMPORT_NODES = {ast.Import, ast.ImportFrom, ast.alias}
-
-
-# Baseline per-level symbol policy.
-# Index position must align with PermissionLevel numeric values.
-_ALLOWED_SYMBOLS_MINIMUM = _CORE_FUNCTIONS
-_ALLOWED_SYMBOLS_LIMITED = (
-    _ALLOWED_SYMBOLS_MINIMUM
-    | _COLLECTION_FUNCTIONS
-    | _UTILITY_FUNCTIONS
-    | _FUNCTIONAL_FUNCTIONS
-)
-_ALLOWED_SYMBOLS_PERMISSIVE = _ALLOWED_SYMBOLS_LIMITED
-_ALLOWED_SYMBOLS_UNSUPERVISED = set(dir(builtins))
-MEMORY_LIMIT_INFINITY = 2**63 - 1
-
-_BLOCKED_SYMBOLS_UNSUPERVISED = {"breakpoint", "compile", "eval", "exec"}
-_BLOCKED_SYMBOLS_PERMISSIVE = _BLOCKED_SYMBOLS_UNSUPERVISED | {
-    "__import__", "delattr", "getattr", "globals", "input", "locals",
-    "memoryview", "open", "setattr", "vars",
-}
-_BLOCKED_SYMBOLS_LIMITED = _BLOCKED_SYMBOLS_PERMISSIVE
-_BLOCKED_SYMBOLS_MINIMUM = _BLOCKED_SYMBOLS_PERMISSIVE
-
-# Baseline per-level AST policy.
-# Index position must align with PermissionLevel numeric values.
-_ALLOWED_NODES_MINIMUM = _CORE_NODES
-_ALLOWED_NODES_LIMITED = _ALLOWED_NODES_MINIMUM | _ITERATION_NODES | _FUNCTION_DEF_NODES
-_ALLOWED_NODES_PERMISSIVE = _ALLOWED_NODES_LIMITED | _EXCEPTION_NODES | _CLASS_NODES | _SCOPE_NODES
-_ALLOWED_NODES_UNSUPERVISED = _ALLOWED_NODES_PERMISSIVE | _IMPORT_NODES
-
-
-DEFAULT_ALLOWED_SYMBOLS = (
-    _ALLOWED_SYMBOLS_MINIMUM,
-    _ALLOWED_SYMBOLS_LIMITED,
-    _ALLOWED_SYMBOLS_PERMISSIVE,
-    _ALLOWED_SYMBOLS_UNSUPERVISED,
-)
-
-DEFAULT_ALLOWED_NODES = (
-    _ALLOWED_NODES_MINIMUM,
-    _ALLOWED_NODES_LIMITED,
-    _ALLOWED_NODES_PERMISSIVE,
-    _ALLOWED_NODES_UNSUPERVISED,
-)
-
-DEFAULT_BLOCKED_NODES = (
-    {ast.Attribute},
-    set(),
-    set(),
-    set(),
-)
-
-DEFAULT_BLOCKED_SYMBOLS = (
-    _BLOCKED_SYMBOLS_MINIMUM,
-    _BLOCKED_SYMBOLS_LIMITED,
-    _BLOCKED_SYMBOLS_PERMISSIVE,
-    _BLOCKED_SYMBOLS_UNSUPERVISED,
-)
-
-DEFAULT_TIMEOUT_SECONDS: tuple[float, float, float, float] = (
-    0.1,
-    0.5,
-    10.0,
-    float("inf"),
-)
-
-DEFAULT_MEMORY_LIMIT_BYTES: tuple[int, int, int, int] = (
-    64 * 1024 * 1024,
-    256 * 1024 * 1024,
-    MEMORY_LIMIT_INFINITY,
+from .policy_tables import (
+    DEFAULT_ALLOWED_NODES,
+    DEFAULT_ALLOWED_SYMBOLS,
+    DEFAULT_BLOCKED_NODES,
+    DEFAULT_BLOCKED_SYMBOLS,
+    DEFAULT_MEMORY_LIMIT_BYTES,
+    DEFAULT_TIMEOUT_SECONDS,
     MEMORY_LIMIT_INFINITY,
 )
 
 
 def _build_builtins_scope(allowed_symbols: set[str]) -> dict[str, object]:
-    """Create the restricted `__builtins__` mapping for execution globals."""
+    """Create restricted `__builtins__` mapping for execution globals."""
     return {
         name: getattr(builtins, name)
         for name in allowed_symbols
@@ -195,14 +34,14 @@ class PermissionLevel(IntEnum):
 
     Design invariants (DO NOT BREAK):
     - Level `0` must always be the MOST RESTRICTIVE level
-        (used as fallback for invalid input).
+      (used as fallback for invalid input).
     - The last enum member (highest numeric value) should always be the
-        LEAST RESTRICTIVE level.
+      LEAST RESTRICTIVE level.
     - `LIMITED` should remain the default for constructor/CLI when no level
-        is specified.
+      is specified.
     - Ordering allows numeric comparisons, for example:
-        `level >= PermissionLevel.LIMITED` means
-        "at least limited permissions".
+      `level >= PermissionLevel.LIMITED` means
+      "at least limited permissions".
 
     These invariants allow adding/changing permission levels without refactoring
     fallback/default logic.
@@ -222,9 +61,7 @@ class PermissionLevel(IntEnum):
         """
         if isinstance(value, str):
             normalized = value.strip()
-            if not normalized:
-                normalized = value
-            else:
+            if normalized:
                 try:
                     return cls[normalized.upper()]
                 except KeyError:
@@ -248,10 +85,10 @@ class Permissions:
     allow/block overrides and import injections, then computes concrete symbol
     and AST constraints used by the validator/execution engine.
 
-        Defaults:
-        - `base_perms` defaults to `PermissionLevel.LIMITED`.
-        - Per-instance timeout/memory limits are initialized from
-            `DEFAULT_TIMEOUT_SECONDS` / `DEFAULT_MEMORY_LIMIT_BYTES` by level.
+    Defaults:
+    - `base_perms` defaults to `PermissionLevel.LIMITED`.
+    - Per-instance timeout/memory limits initialize from
+      `DEFAULT_TIMEOUT_SECONDS` / `DEFAULT_MEMORY_LIMIT_BYTES` by level.
     """
 
     def __init__(
@@ -265,19 +102,7 @@ class Permissions:
         timeout_seconds: float | None = None,
         memory_limit_bytes: int | None = None,
     ):
-        """Build a policy from level defaults plus optional overrides.
-
-        Args:
-            base_perms: Baseline permission level. Defaults to `LIMITED`.
-            allow_symbols: Additional symbol names to permit.
-            block_symbols: Symbol names to deny even if baseline allows them.
-            allow_nodes: Additional AST node types to permit.
-            block_nodes: AST node types to deny even if baseline allows them.
-            imports: Imported objects injected into execution globals.
-            timeout_seconds: Optional per-instance execution timeout override.
-            memory_limit_bytes: Optional per-instance memory limit override.
-        """
-        # Normalize optional containers to avoid mutable-default pitfalls.
+        """Build a policy from level defaults plus optional overrides."""
         allow_symbols = allow_symbols or set()
         block_symbols = block_symbols or set()
         allow_nodes = allow_nodes or set()
@@ -298,23 +123,27 @@ class Permissions:
         )
 
         blocked_symbols = DEFAULT_BLOCKED_SYMBOLS[self.level] | block_symbols
-        self.allowed_symbols = (DEFAULT_ALLOWED_SYMBOLS[self.level] | allow_symbols) - blocked_symbols
+        self.allowed_symbols = (
+            DEFAULT_ALLOWED_SYMBOLS[self.level] | allow_symbols
+        ) - blocked_symbols
         if self.level >= PermissionLevel.PERMISSIVE:
             self.allowed_symbols.add("__build_class__")
         self.imported_symbols = set(imports.keys()) - blocked_symbols
         self.allowed_symbols |= self.imported_symbols
 
         self.globals_dict: dict[str, object] = {
-            "__builtins__": _build_builtins_scope(self.allowed_symbols)
+            "__builtins__": _build_builtins_scope(self.allowed_symbols),
+            "__name__": "__safe_repl__",
         }
-        self.globals_dict["__name__"] = "__safe_repl__"
-        self.globals_dict.update({name: obj for name, obj in imports.items() if name not in blocked_symbols})
+        self.globals_dict.update(
+            {name: obj for name, obj in imports.items() if name not in blocked_symbols}
+        )
 
         self.allowed_nodes = (
             (DEFAULT_ALLOWED_NODES[self.level] | allow_nodes)
             - (DEFAULT_BLOCKED_NODES[self.level] | block_nodes)
         )
-        self.allowed_node_tuple = tuple(self.allowed_nodes) # For efficient isinstance checks in validator.
+        self.allowed_node_tuple = tuple(self.allowed_nodes)  # Efficient isinstance checks.
 
     def __str__(self) -> str:
         """Return a compact human-readable summary of active policy."""
@@ -332,3 +161,10 @@ class Permissions:
     def set_memory_limit_bytes(self, bytes_limit: int) -> None:
         """Override this instance's memory limit in bytes."""
         self.memory_limit_bytes = bytes_limit
+
+
+__all__ = (
+    "MEMORY_LIMIT_INFINITY",
+    "PermissionLevel",
+    "Permissions",
+)

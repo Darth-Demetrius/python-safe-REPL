@@ -6,7 +6,7 @@ This module intentionally stays small and focused:
 - coordinate optional persistent subprocess session usage
 
 Process runtime mechanics (IPC protocol, workers, lifecycle) live in
-`safe_repl.subprocess_runtime`.
+`safe_repl.process_isolation`.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from enum import Enum
 
 from .engine import safe_exec
 from .policy import Permissions
-from .subprocess_runtime import (
+from .process_isolation import (
     PersistentSubprocessSession,
     safe_exec_process_isolated,
     supports_process_isolation,
@@ -30,11 +30,7 @@ class ExecutionMode(str, Enum):
 
     @classmethod
     def __missing__(cls, value: object) -> "ExecutionMode | None":
-        """Normalize common string variants for robust parsing.
-
-        Supports values such as `process`, `PROCESS`, `in_process`, and
-        enum-name forms like `IN_PROCESS`.
-        """
+        """Normalize common string variants for robust parsing."""
         if not isinstance(value, str):
             return None
         normalized = value.strip().lower().replace("_", "-")
@@ -67,11 +63,7 @@ def coerce_execution_mode(
     *,
     fallback: ExecutionModeInput | None = None,
 ) -> ExecutionMode:
-    """Normalize optional execution mode input to `ExecutionMode`.
-
-    When `mode` is `None`, falls back to `fallback`, then to
-    `ExecutionMode.default()`.
-    """
+    """Normalize optional execution mode input to `ExecutionMode`."""
     candidate = mode if mode is not None else fallback
     if candidate is None:
         return ExecutionMode.default()
@@ -127,3 +119,18 @@ def reset_execution_state(
     user_vars.clear()
     if persistent_session is not None:
         persistent_session.reset()
+
+
+__all__ = (
+    "ExecutionMode",
+    "ExecutionModeInput",
+    "ExecutionModeOverride",
+    "coerce_execution_mode",
+    "uses_persistent_process",
+    "PersistentSubprocessSession",
+    "safe_exec_process_isolated",
+    "supports_process_isolation",
+    "execute_snippet",
+    "dispatch_execution",
+    "reset_execution_state",
+)

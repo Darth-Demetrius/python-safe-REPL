@@ -135,6 +135,24 @@ def test_safe_session_from_cli_args_with_explicit_import() -> None:
     assert session.exec("j.dumps({'x': 1})") == '{"x": 1}'
 
 
+def test_safe_session_from_cli_args_empty_import_disables_default_math() -> None:
+    args = argparse.Namespace(
+        level="LIMITED",
+        imports=[""],
+        allow_functions=None,
+        block_functions=None,
+        allow_nodes=None,
+        block_nodes=None,
+        list_functions=False,
+        list_nodes=False,
+        execution_mode="process",
+    )
+    session = SafeSession.from_cli_args(args)
+    assert session.execution_mode is ExecutionMode.PROCESS
+    with pytest.raises(ValueError, match="Function 'sqrt' is not allowed"):
+        session.exec("sqrt(16)")
+
+
 @pytest.mark.parametrize(
     ("code", "error"),
     [

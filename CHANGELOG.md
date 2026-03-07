@@ -4,6 +4,23 @@
 
 - No changes yet.
 
+## [0.3.1] - 2026-03-07
+
+### Changed
+- Merged `safe_repl.execution_mode` into `safe_repl.execution` so execution mode types/coercion now live in one module.
+- Merged `safe_repl.session_repl` helpers into `safe_repl.session` and simplified session internals.
+- Reduced small single-use helper indirection across session/import/runtime modules while preserving behavior.
+
+### Fixed
+- Aligned `SafeSession.from_cli_args` import behavior with documented CLI `--import` semantics:
+	- no `--import` uses default `math:*`
+	- any `--import` usage disables default math auto-import
+	- `--import ""` disables auto-import without adding imports
+
+### Documentation
+- Updated README to explicitly describe `--import` default/override behavior.
+- Clarified internal module layout after execution/session helper merges.
+
 ## [0.3.0] - 2026-03-07
 
 ### Added
@@ -27,7 +44,8 @@
 - REPL in process mode now opens one persistent subprocess worker for the session run and closes it on exit.
 - Execution internals were split for clarity:
 	- `safe_repl.execution` handles mode coercion and dispatch.
-	- `safe_repl.subprocess_runtime` handles process worker protocol and lifecycle.
+	- `safe_repl.process_isolation` is the process-execution module.
+	- `safe_repl.process_protocol` centralizes worker IPC schema/constants.
 
 ### Fixed
 - Mutable default argument usage removed from `Permissions.__init__`.
@@ -39,5 +57,6 @@
 - Added unit and integration CLI tests for error handling and flag behavior.
 - Expanded README with API surface, exception handling, execution-mode defaults, internal module split notes, and persistent subprocess lifecycle examples.
 
-[Unreleased]: https://github.com/Darth-Demetrius/python-sub-REPL/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Darth-Demetrius/python-sub-REPL/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.3.1
 [0.3.0]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.3.0

@@ -10,7 +10,7 @@ The package-level imports from `safe_repl` are the supported public API surface:
 - `safe_exec`, `repl`, `main`
 - `SafeReplImportError`, `SafeReplCliArgError`
 
-Submodules (`safe_repl.policy`, `safe_repl.engine`, `safe_repl.validator`, `safe_repl.execution`, `safe_repl.subprocess_runtime`, etc.) are implementation details and may change more frequently.
+Submodules (`safe_repl.policy`, `safe_repl.engine`, `safe_repl.validator`, `safe_repl.execution`, `safe_repl.process_isolation`, etc.) are implementation details and may change more frequently.
 
 ## Install
 
@@ -114,8 +114,14 @@ print(result)  # 14
 
 - `safe_repl.execution`
     - Execution-mode parsing and high-level dispatch helpers.
-- `safe_repl.subprocess_runtime`
-    - Subprocess worker protocol, IPC, one-shot process execution, and persistent process session lifecycle.
+- `safe_repl.process_isolation`
+    - Public process-isolated execution APIs and persistent session orchestration.
+- `safe_repl.process_control`
+    - Process lifecycle, start-method validation, and timeout coordination helpers.
+- `safe_repl.process_worker`
+    - Worker-side execution, command handling, and response normalization.
+- `safe_repl.process_protocol`
+    - Shared IPC protocol constants and typed worker payload schemas.
 
 Example:
 
@@ -283,6 +289,14 @@ safe-repl --show-repl-details --no-show-repl-details-once
 - `--execution-mode {in-process,process}`
     - `process` (default): executes snippets in isolated subprocesses (stronger containment).
     - `in-process`: executes snippets in the current interpreter process.
+
+### CLI import flag behavior
+
+- `--import SPEC`
+    - Supports `module`, `module as alias`, `module:name`, and `module:*`.
+    - If `--import` is not used, CLI defaults to importing `math:*`.
+    - Any use of `--import` disables default `math:*` auto-import.
+    - `--import ""` disables auto-import without adding any imports.
 
 ## Testing matrix
 

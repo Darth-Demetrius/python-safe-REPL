@@ -4,11 +4,17 @@ Coordinates timeout and memory controls around validated evaluation/exec.
 """
 
 import ast
+from collections.abc import Callable
 import signal
+from types import FrameType
 import tracemalloc
 
 from .policy import MEMORY_LIMIT_INFINITY, Permissions
 from .validator import validate_ast
+
+
+SignalHandler = Callable[[int, FrameType | None], object] | int | signal.Handlers | None
+TimerState = tuple[float, float]
 
 
 def collect_allowed_names(
@@ -27,6 +33,37 @@ def collect_allowed_names(
     return allowed_names
 
 
+def _configure_memory_tracking(memory_limit: int) -> bool:
+    """Enable memory peak tracking when a finite limit is configured."""
+    memory_limit_active = memory_limit < MEMORY_LIMIT_INFINITY
+    if not memory_limit_active:
+        return False
+
+    if not tracemalloc.is_tracing():
+        tracemalloc.start()
+        trace_started = True
+    else:
+        trace_started = False
+    tracemalloc.reset_peak()
+    return trace_started
+
+
+def _start_timeout(timeout_seconds: float) -> tuple[SignalHandler, TimerState | None]:
+    """Install SIGALRM timeout handler and return previous signal/timer state."""
+    if timeout_seconds >= float("inf"):
+        return None, None
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+
+    def _handle_timeout(_signum, _frame):
+        raise TimeoutError("Execution timed out.")
+
+    signal.signal(signal.SIGALRM, _handle_timeout)
+    signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
+    return previous_handler, previous_timer
+
+
 def safe_exec(
     code: str,
     user_vars: dict[str, object],
@@ -40,27 +77,10 @@ def safe_exec(
     global_scope = perms.globals_dict
     timeout_seconds = perms.timeout_seconds
     memory_limit = perms.memory_limit_bytes
+    trace_started = _configure_memory_tracking(memory_limit)
     memory_limit_active = memory_limit < MEMORY_LIMIT_INFINITY
-    trace_started = False
     allowed_names = collect_allowed_names(user_vars, global_scope)
-
-    if memory_limit_active:
-        if not tracemalloc.is_tracing():
-            tracemalloc.start()
-            trace_started = True
-        tracemalloc.reset_peak()
-
-    previous_handler = None
-    previous_timer = None
-    if timeout_seconds < float("inf"):
-        previous_handler = signal.getsignal(signal.SIGALRM)
-        previous_timer = signal.getitimer(signal.ITIMER_REAL)
-
-        def _handle_timeout(_signum, _frame):
-            raise TimeoutError("Execution timed out.")
-
-        signal.signal(signal.SIGALRM, _handle_timeout)
-        signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
+    previous_handler, previous_timer = _start_timeout(timeout_seconds)
 
     try:
         tree = ast.parse(code, mode="exec")

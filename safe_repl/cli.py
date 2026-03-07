@@ -92,10 +92,8 @@ def _print_allowed_nodes(session: SafeSession) -> None:
         print(f"  {node.__name__}")
 
 
-def main() -> None:
-    """Parse CLI arguments and run list/report or interactive REPL mode."""
-    parser = _build_parser()
-
+def _parse_args_and_build_session(parser: argparse.ArgumentParser) -> tuple[argparse.Namespace, SafeSession]:
+    """Parse CLI args and construct session, exiting on user-facing arg errors."""
     args = parser.parse_args()
     try:
         validate_cli_args(args)
@@ -103,7 +101,14 @@ def main() -> None:
     except (SafeReplCliArgError, SafeReplImportError) as error:
         print(error, file=sys.stderr)
         sys.exit(1)
+    return args, session
 
+
+def main() -> None:
+    """Parse CLI arguments and run list/report or interactive REPL mode."""
+    parser = _build_parser()
+
+    args, session = _parse_args_and_build_session(parser)
     if args.list_functions:
         _print_allowed_functions(session)
         return
