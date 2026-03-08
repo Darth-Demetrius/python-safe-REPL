@@ -14,6 +14,9 @@ from .execution import (
 )
 from .imports import parse_import_spec
 from .policy import PermissionLevel, Permissions
+from .repl_command_registry import (
+    CommandRegistry,
+)
 
 
 def _resolve_cli_imports(import_args: list[str] | None) -> dict[str, object]:
@@ -49,37 +52,63 @@ class SafeSession:
         user_vars: dict[str, object] | None = None,
         *,
         execution_mode: ExecutionModeInput = ExecutionMode.PROCESS,
+        repl_commands: CommandRegistry | None = None,
+        command_char: str = ":",
     ):
         """Create a session with persistent variables and execution mode."""
         self.perms = perms
         self.user_vars: dict[str, object] = user_vars or {}
         self.execution_mode = coerce_execution_mode(execution_mode)
+        self.command_char = command_char
         self._persistent_process_session: PersistentSubprocessSession | None = None
+        self.command_registry = repl_commands or CommandRegistry()
+
+        self._cache_startup_summaries()
+
+    def _cache_startup_summaries(self) -> None:
+        """Precompute static startup summary strings for this session."""
 
         builtins_scope = self.perms.globals_dict.get("__builtins__", {})
-        builtins_names = sorted(builtins_scope.keys()) if isinstance(builtins_scope, dict) else []
+        builtins_names = (
+            sorted(builtins_scope.keys()) if isinstance(builtins_scope, dict) else []
+        )
         self._startup_builtins = ", ".join(builtins_names)
         self._startup_nodes = ", ".join(sorted(node.__name__ for node in self.perms.allowed_nodes))
         self._startup_imports = ", ".join(sorted(self.perms.imported_symbols))
-        self._startup_details_printed = False
 
-    def _print_startup_details(
-        self,
-        *,
-        show_details: bool,
-        show_details_once: bool,
-    ) -> None:
-        """Print optional startup details and track one-time print state."""
-        if not show_details:
-            return
-        if show_details_once and self._startup_details_printed:
-            return
-
+    def print_builtins(self) -> None:
+        """Print builtins summary for the current session permissions."""
         print(f"  Builtins: {self._startup_builtins}")
+
+    def print_nodes(self) -> None:
+        """Print AST-node summary for the current session permissions."""
         print(f"  Nodes: {self._startup_nodes}")
+
+    def print_imports(self) -> None:
+        """Print import summary for the current session permissions."""
         if self._startup_imports:
             print(f"  Imports: {self._startup_imports}")
-        self._startup_details_printed = True
+
+    def print_user_vars(self, *, include_values: bool = True) -> str:
+        """Print user variable names, optionally including their values."""
+        rendered_string = "  User vars: "
+
+        if not self.user_vars:
+            rendered_string += "(none)"
+        elif include_values:
+            rendered_string += "".join(
+                f"\n    {name}={value!r}" for name, value in sorted(self.user_vars.items())
+            )
+        else:
+            rendered_string += ", ".join(sorted(self.user_vars.keys()))
+
+        print(rendered_string)
+        return rendered_string
+
+    def _print_repl_intro(self) -> None:
+        """Print basic REPL guidance and available command help lines."""
+        print("Type 'quit' or 'exit' to exit.")
+        self.command_registry.show_help(cmd_char=self.command_char)
 
     def _run_repl_loop(self, *, mode: ExecutionMode) -> None:
         """Run interactive input/execute loop until user exits."""
@@ -95,6 +124,9 @@ class SafeSession:
             if line.lower() in {"quit", "exit"}:
                 print("Bye")
                 break
+            if line.startswith(self.command_char):
+                if self.command_registry.dispatch(line.removeprefix(self.command_char), session=self):
+                    continue
 
             try:
                 result = self.exec(line, execution_mode=mode)
@@ -158,7 +190,7 @@ class SafeSession:
         )
 
     def open_subprocess_session(self) -> None:
-        """Start long-lived subprocess worker for repeated process-mode execution."""
+        """Start subprocess worker for repeated process-mode execution."""
         if self._persistent_process_session is None:
             self._persistent_process_session = PersistentSubprocessSession(
                 perms=self.perms,
@@ -167,51 +199,43 @@ class SafeSession:
         self._persistent_process_session.open()
 
     def close_subprocess_session(self) -> None:
-        """Stop long-lived subprocess worker if active."""
+        """Stop subprocess worker if active."""
         session = self._persistent_process_session
         self._persistent_process_session = None
         if session is not None:
             session.close()
 
     def reopen_subprocess_session(self) -> None:
-        """Restart long-lived subprocess worker with current local variables."""
+        """Restart subprocess worker with current local variables."""
         self.close_subprocess_session()
         self.open_subprocess_session()
 
     def repl(
         self,
         *,
-        show_details: bool = False,
-        show_details_once: bool | None = None,
         execution_mode: ExecutionModeOverride = None,
+        command_char: str | None = None,
     ) -> None:
         """Run interactive single-line REPL loop.
 
         Args:
-            show_details: When true, print builtins/nodes/import summary.
-            show_details_once: When true, details are printed once per session.
-                Defaults to `False` for MINIMUM/LIMITED and `True` for
-                PERMISSIVE/UNSUPERVISED.
             execution_mode: Optional backend override for this REPL run only.
                 When omitted, uses this session's configured execution mode.
+            command_char: Optional prefix used to identify REPL commands.
+                When omitted, reuses the session's current command prefix.
 
         Uses a persistent subprocess worker for `ExecutionMode.PROCESS` and
         closes it when the loop exits.
         """
-        if show_details_once is None:
-            show_details_once = self.perms.level >= PermissionLevel.PERMISSIVE
-
         mode = coerce_execution_mode(execution_mode, fallback=self.execution_mode)
+        if command_char is not None:
+            self.command_char = command_char
+
         use_persistent_process = mode is ExecutionMode.PROCESS
         if use_persistent_process:
             self.open_subprocess_session()
 
-        print(f"Safe REPL ({self.perms})")
-        self._print_startup_details(
-            show_details=show_details,
-            show_details_once=show_details_once,
-        )
-        print("Type 'quit' to exit.")
+        self._print_repl_intro()
 
         try:
             self._run_repl_loop(mode=mode)
@@ -223,13 +247,11 @@ class SafeSession:
 def repl(
     *,
     perms: Permissions,
-    show_details: bool = False,
-    show_details_once: bool | None = None,
     execution_mode: ExecutionModeOverride = None,
+    command_char: str = ":",
 ) -> None:
     """Convenience function to launch a REPL for one permissions object."""
     SafeSession(perms).repl(
-        show_details=show_details,
-        show_details_once=show_details_once,
         execution_mode=execution_mode,
+        command_char=command_char,
     )

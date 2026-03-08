@@ -21,6 +21,12 @@ def _build_parser() -> argparse.ArgumentParser:
   %(prog)s --level UNSUPERVISED          # Allow imports and most builtins
   %(prog)s --allow-functions map filter  # Add functions to default set
   %(prog)s --list-functions              # Show allowed functions and exit
+
+    REPL commands:
+        :help <command>                        # Show help for one command
+        :commands                              # List all available commands
+        :vars                                  # Show user variable names
+        :vars values                           # Show user variables with values
         """,
     )
 
@@ -48,20 +54,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--block-nodes", nargs="+", help="Remove AST nodes")
     parser.add_argument("--list-functions", action="store_true", help="Show allowed functions")
     parser.add_argument("--list-nodes", action="store_true", help="Show allowed AST nodes")
-    parser.add_argument(
-        "--show-repl-details",
-        action="store_true",
-        help="Show REPL startup details (builtins, nodes, imports).",
-    )
-    parser.add_argument(
-        "--show-repl-details-once",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help=(
-            "Whether startup details print once per session (default: false for "
-            "MINIMUM/LIMITED, true for PERMISSIVE/UNSUPERVISED)."
-        ),
-    )
     parser.add_argument(
         "--execution-mode",
         choices=ExecutionMode.choices(),
@@ -117,7 +109,4 @@ def main() -> None:
         _print_allowed_nodes(session)
         return
 
-    session.repl(
-        show_details=args.show_repl_details,
-        show_details_once=args.show_repl_details_once,
-    )
+    session.repl()

@@ -3,6 +3,7 @@
 import argparse
 import ast
 import importlib
+from types import ModuleType
 
 
 class SafeReplImportError(ValueError):
@@ -13,24 +14,23 @@ class SafeReplCliArgError(ValueError):
     """Raised when CLI AST-node arguments are invalid."""
 
 
-def _resolve_ast_node(node_name: str) -> type[ast.AST]:
-    """Resolve one AST node class by name for CLI allow/block lists."""
-    node = getattr(ast, node_name, None)
-    if not isinstance(node, type) or not issubclass(node, ast.AST):
-        raise SafeReplCliArgError(f"Unknown node type: {node_name}")
-    return node
-
-
 def _parse_symbol_alias(item: str) -> tuple[str, str]:
-    """Parse `name` or `name as alias` into `(source_name, target_name)`."""
-    if " as " in item:
-        source_name, alias = item.split(" as ", 1)
-        return source_name.strip(), alias.strip()
-    clean_item = item.strip()
-    return clean_item, clean_item
+    """Parse `name` or `name as alias` into `(source_name, alias)`."""
+    source_name, has_alias, alias = item.partition(" as ")
+    source_name = source_name.strip()
+    alias = alias.strip() if has_alias else source_name
+
+    if (
+        not source_name
+        or not alias
+        or any(char.isspace() for char in source_name)
+        or any(char.isspace() for char in alias)
+    ):
+        raise SafeReplImportError(f"Invalid import symbol spec: {item!r}")
+    return source_name, alias
 
 
-def _parse_import_list(module: object, import_names: str) -> dict[str, object]:
+def _parse_import_list(module: ModuleType, import_names: str) -> dict[str, object]:
     """Parse comma-separated symbol import names for one imported module."""
     if import_names == "*":
         return {name: obj for name, obj in vars(module).items() if not name.startswith("_")}
@@ -38,7 +38,12 @@ def _parse_import_list(module: object, import_names: str) -> dict[str, object]:
     result: dict[str, object] = {}
     for item in import_names.split(","):
         original_name, alias = _parse_symbol_alias(item)
-        result[alias] = getattr(module, original_name)
+        try:
+            result[alias] = getattr(module, original_name)
+        except AttributeError as exc:
+            raise SafeReplImportError(
+                f"Module '{module.__name__}' has no attribute '{original_name}'"
+            ) from exc
     return result
 
 
@@ -56,19 +61,26 @@ def parse_import_spec(spec: str) -> dict[str, object]:
         SafeReplImportError: If parsing/import resolution fails.
     """
     spec = spec.strip()
+    if not spec:
+        raise SafeReplImportError("Empty import spec cannot be parsed")
+
     try:
         if ":" in spec:
             module_name, import_names = spec.split(":", 1)
             module = importlib.import_module(module_name.strip())
             return _parse_import_list(module, import_names.strip())
 
-        if " as " in spec:
-            module_name, alias = spec.split(" as ", 1)
-            return {alias.strip(): importlib.import_module(module_name.strip())}
+        module_name, alias = _parse_symbol_alias(spec)
+        imported_module = importlib.import_module(module_name)
+        if alias != module_name:
+            return {alias: imported_module}
 
-        imported_module = importlib.import_module(spec)
-        top_level_name = imported_module.__name__.split(".")[0]
+        top_level_name, has_submodule, _ = module_name.partition(".")
+        if not has_submodule:
+            return {top_level_name: imported_module}
         return {top_level_name: importlib.import_module(top_level_name)}
+    except SafeReplImportError:
+        raise
     except Exception as e:
         raise SafeReplImportError(f"Failed to import '{spec}': {e}") from e
 
@@ -79,7 +91,14 @@ def validate_cli_args(args: argparse.Namespace) -> None:
     Raises:
         SafeReplCliArgError: If any node name does not exist in `ast`.
     """
-    for node_list in (args.allow_nodes, args.block_nodes):
-        if node_list:
-            for i, node_name in enumerate(node_list):
-                node_list[i] = _resolve_ast_node(node_name)
+    def resolve_node_class(node_name: str) -> type[ast.AST]:
+        node = getattr(ast, node_name, None)
+        if not isinstance(node, type) or not issubclass(node, ast.AST):
+            raise SafeReplCliArgError(f"Unknown node type: {node_name}")
+        return node
+
+    for arg_name in ("allow_nodes", "block_nodes"):
+        node_names = getattr(args, arg_name)
+        if not node_names:
+            continue
+        setattr(args, arg_name, [resolve_node_class(node_name) for node_name in node_names])

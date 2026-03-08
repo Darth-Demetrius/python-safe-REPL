@@ -1,5 +1,6 @@
 import argparse
 import math
+from typing import TypedDict
 
 import pytest
 
@@ -9,6 +10,7 @@ from safe_repl.imports import (
     parse_import_spec,
     validate_cli_args,
 )
+from safe_repl.repl_command_registry import CommandRegistry
 from safe_repl import (
     ExecutionMode,
     PermissionLevel,
@@ -329,12 +331,30 @@ def test_permission_level_invalid_value_warns_and_defaults_to_minimum() -> None:
     assert level == PermissionLevel.MINIMUM
 
 
-def test_parse_import_spec_raises_library_error() -> None:
+def test_parse_import_spec_raises_safe_repl_import_error() -> None:
     with pytest.raises(SafeReplImportError, match="Failed to import"):
         parse_import_spec("definitely_not_a_real_module_xyz")
 
 
-def test_validate_cli_args_raises_library_error_for_unknown_node() -> None:
+def test_parse_import_spec_reports_missing_symbol() -> None:
+    with pytest.raises(SafeReplImportError, match="has no attribute"):
+        parse_import_spec("math:definitely_not_a_real_symbol_xyz")
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        "math as ",
+        "math:sin cos",
+        "math:sin as s in",
+    ],
+)
+def test_parse_import_spec_rejects_invalid_symbol_specs(spec: str) -> None:
+    with pytest.raises(SafeReplImportError, match="Invalid import symbol spec"):
+        parse_import_spec(spec)
+
+
+def test_validate_cli_args_raises_safe_repl_cli_arg_error_for_unknown_node() -> None:
     args = argparse.Namespace(allow_nodes=["DefinitelyNotAnAstNode"], block_nodes=None)
     with pytest.raises(SafeReplCliArgError, match="Unknown node type"):
         validate_cli_args(args)
@@ -345,52 +365,237 @@ def test_typed_exceptions_reexported_from_top_level() -> None:
     assert SafeReplCliArgError.__name__ == "SafeReplCliArgError"
 
 
-def test_repl_show_details_default_repeats_for_limited(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_print_user_vars_prints_names_only(capsys: pytest.CaptureFixture[str]) -> None:
+    session = SafeSession(activate(PermissionLevel.LIMITED), user_vars={"b": 2, "a": 1})
+    session.print_user_vars(include_values=False)
+
+    output = capsys.readouterr().out
+    assert output == "  User vars: a, b\n"
+
+
+def test_print_user_vars_prints_values(capsys: pytest.CaptureFixture[str]) -> None:
+    session = SafeSession(activate(PermissionLevel.LIMITED), user_vars={"b": 2, "a": 1})
+    session.print_user_vars()
+
+    output = capsys.readouterr().out
+    assert output == "  User vars: \n    a=1\n    b=2\n"
+
+
+@pytest.mark.parametrize("run_count", [1, 2])
+def test_repl_startup_prints_basic_intro_and_help_hint(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    run_count: int,
+) -> None:
     session = SafeSession(activate(PermissionLevel.LIMITED))
     monkeypatch.setattr("builtins.input", lambda _prompt: "quit")
 
-    session.repl(show_details=True)
+    for _ in range(run_count):
+        session.repl()
+        output = capsys.readouterr().out
+        assert "Type 'quit' or 'exit' to exit." in output
+        assert "Use ':help <command>' to show help for a command" in output
+        assert "Bye" in output
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_fragments"),
+    [
+        (":vars values", ["User vars:", "a=1", "b=2"]),
+        (":vars", ["User vars: a, b"]),
+    ],
+)
+def test_repl_vars_command_prints_expected_output(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+    expected_fragments: list[str],
+) -> None:
+    inputs = iter([command, "quit"])
+    session = SafeSession(activate(PermissionLevel.LIMITED), user_vars={"a": 1, "b": 2})
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(inputs))
+
+    session.repl()
+    output = capsys.readouterr().out
+
+    for expected_fragment in expected_fragments:
+        assert expected_fragment in output
+
+
+@pytest.mark.parametrize(
+    ("command_char", "command_name", "help_text"),
+    [
+        (":", "ping", "Use ':ping' to print pong."),
+        ("!", "ping", "Use '{}ping' to print pong."),
+    ],
+)
+def test_repl_runs_injected_custom_command(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command_char: str,
+    command_name: str,
+    help_text: str,
+) -> None:
+    registry = CommandRegistry()
+
+    @registry.command(command_name, help_text=help_text)
+    def _ping_command(_args: str, _session: SafeSession) -> None:
+        print("pong")
+
+    inputs = iter([f"{command_char}{command_name}", "quit"])
+    session = SafeSession(
+        activate(PermissionLevel.LIMITED),
+        repl_commands=registry,
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(inputs))
+
+    session.repl(command_char=command_char)
+    output = capsys.readouterr().out
+
+    assert "pong" in output
+
+
+def test_show_help_for_specific_command_uses_current_prefix(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    registry = CommandRegistry()
+
+    @registry.command("ping", help_text="Use '{}ping' to print pong.")
+    def _ping_command(_args: str, _session: SafeSession) -> None:
+        print("pong")
+
+    session = SafeSession(
+        activate(PermissionLevel.LIMITED),
+        repl_commands=registry,
+        command_char="!",
+    )
+    session.command_registry.show_help("ping", cmd_char=session.command_char)
+
+    output = capsys.readouterr().out
+    assert output == "Use '!ping' to print pong.\n"
+
+
+def test_show_help_includes_args_description(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    registry = CommandRegistry()
+
+    @registry.command(
+        "ping",
+        help_text="Use '{0}ping <name>' to print pong.",
+        args_desc="<name>: label to include in pong output.",
+    )
+    def _ping_command(_args: str, _session: SafeSession) -> None:
+        print("pong")
+
+    session = SafeSession(
+        activate(PermissionLevel.LIMITED),
+        repl_commands=registry,
+        command_char="!",
+    )
+    session.command_registry.show_help("ping", cmd_char=session.command_char)
+
+    output = capsys.readouterr().out
+    assert output == "Use '!ping <name>' to print pong.\nArgs: <name>: label to include in pong output.\n"
+
+
+def test_show_help_falls_back_when_help_template_is_invalid(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    registry = CommandRegistry()
+
+    @registry.command("ping", help_text="Use '{1}ping' to print pong.")
+    def _ping_command(_args: str, _session: SafeSession) -> None:
+        print("pong")
+
+    session = SafeSession(
+        activate(PermissionLevel.LIMITED),
+        repl_commands=registry,
+        command_char="!",
+    )
+    session.command_registry.show_help("ping", cmd_char=session.command_char)
+
+    output = capsys.readouterr().out
+    assert output == "Use '{1}ping' to print pong.\n"
+
+
+def test_builtin_inspection_commands_print_session_details(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    session = SafeSession(activate(PermissionLevel.LIMITED, imports={"math": math}))
+
+    assert session.command_registry.dispatch("level", session=session) is True
+    assert session.command_registry.dispatch("functions", session=session) is True
+    assert session.command_registry.dispatch("nodes", session=session) is True
+    assert session.command_registry.dispatch("imports", session=session) is True
+
+    output = capsys.readouterr().out
+    assert "Permission level: limited" in output
+    assert "Builtins:" in output
+    assert "Nodes:" in output
+    assert "Imports:" in output
+
+
+def test_builtin_imports_command_prints_none_when_no_imports(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    session = SafeSession(activate(PermissionLevel.LIMITED))
+
+    assert session.command_registry.dispatch("imports", session=session) is True
+
+    output = capsys.readouterr().out
+    assert output == "  Imports: (none)\n"
+
+
+def test_repl_persists_custom_command_char_between_runs(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    registry = CommandRegistry()
+
+    @registry.command("ping", help_text="Use '{}ping' to print pong.")
+    def _ping_command(_args: str, _session: SafeSession) -> None:
+        print("pong")
+
+    session = SafeSession(activate(PermissionLevel.LIMITED), repl_commands=registry)
+
+    first_inputs = iter(["!ping", "quit"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(first_inputs))
+    session.repl(command_char="!")
     first_output = capsys.readouterr().out
-    session.repl(show_details=True)
+
+    second_inputs = iter(["!ping", "quit"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(second_inputs))
+    session.repl()
     second_output = capsys.readouterr().out
 
-    assert "Builtins:" in first_output
-    assert "Builtins:" in second_output
-
-
-def test_repl_show_details_default_once_for_permissive(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    session = SafeSession(activate(PermissionLevel.PERMISSIVE))
-    monkeypatch.setattr("builtins.input", lambda _prompt: "quit")
-
-    session.repl(show_details=True)
-    first_output = capsys.readouterr().out
-    session.repl(show_details=True)
-    second_output = capsys.readouterr().out
-
-    assert "Builtins:" in first_output
-    assert "Builtins:" not in second_output
+    assert "pong" in first_output
+    assert "pong" in second_output
 
 
 def test_repl_uses_session_execution_mode_by_default(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    tracker: dict[str, object] = {"opened": 0, "closed": 0, "calls": []}
+    class _Tracker(TypedDict):
+        opened: int
+        closed: int
+        calls: list[str]
+
+    tracker: _Tracker = {"opened": 0, "closed": 0, "calls": []}
 
     class _FakePersistentSubprocessSession:
         def __init__(self, *, perms: Permissions, user_vars: dict[str, object]) -> None:
             self._user_vars = user_vars
 
         def open(self) -> None:
-            tracker["opened"] = int(tracker["opened"]) + 1
+            tracker["opened"] += 1
 
         def close(self) -> None:
-            tracker["closed"] = int(tracker["closed"]) + 1
+            tracker["closed"] += 1
 
         def exec(self, code: str) -> object | None:
-            cast_calls = tracker["calls"]
-            assert isinstance(cast_calls, list)
-            cast_calls.append(code)
+            tracker["calls"].append(code)
             return 42
 
         def reset(self) -> None:

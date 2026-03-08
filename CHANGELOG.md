@@ -4,6 +4,21 @@
 
 - No changes yet.
 
+## [0.4.0] - 2026-03-08
+
+### Changed
+- Renamed the REPL command module to `safe_repl.repl_command_registry` for clearer ownership and naming consistency.
+- Simplified REPL startup output to a concise intro hint (`quit`/`exit`) plus command help hint.
+- Expanded built-in REPL inspection commands (`:level`, `:functions`, `:nodes`, `:imports`) and aligned startup guidance with command-driven discovery.
+
+### Tests
+- Simplified/parameterized overlapping REPL command and startup tests in `tests/test_safe_repl.py`.
+- Renamed doctest module file to match current command-registry naming (`tests/test_doctest_repl_command_registry.py`).
+
+### Documentation
+- Updated README and CLI help text to match current REPL command semantics (`:vars` and `:vars values`).
+- Removed stale references to deprecated REPL detail flags and old command-module naming.
+
 ## [0.3.1] - 2026-03-07
 
 ### Changed
@@ -57,6 +72,7 @@
 - Added unit and integration CLI tests for error handling and flag behavior.
 - Expanded README with API surface, exception handling, execution-mode defaults, internal module split notes, and persistent subprocess lifecycle examples.
 
-[Unreleased]: https://github.com/Darth-Demetrius/python-sub-REPL/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/Darth-Demetrius/python-sub-REPL/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.4.0
 [0.3.1]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.3.1
 [0.3.0]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.3.0

@@ -104,9 +104,11 @@ print(result)  # 14
     - Stops the long-lived subprocess worker if active.
 - `reopen_subprocess_session() -> None`
     - Restarts the long-lived subprocess worker using current local state.
-- `repl(*, execution_mode: ExecutionMode | str | None = None) -> None`
+- `repl(*, execution_mode: ExecutionMode | str | None = None, command_char: str | None = None) -> None`
     - Runs interactive REPL bound to this session.
-    - `show_details_once` defaults are level-aware: `False` for `MINIMUM`/`LIMITED`, `True` for `PERMISSIVE`/`UNSUPERVISED`.
+    - Prints a short startup hint for exiting and discovering commands.
+    - Use REPL commands to inspect available functions, nodes, imports, level, and user vars.
+    - `command_char` sets the REPL command prefix (for example `:` or `!`) and persists on the session.
     - Uses the session's saved mode unless an explicit override is passed.
     - In `process` mode, opens a persistent subprocess worker for the REPL run.
 
@@ -270,19 +272,59 @@ safe-repl --level MINIMUM
 safe-repl --level PERMISSIVE
 safe-repl --execution-mode process
 safe-repl --import "json"
-safe-repl --show-repl-details
-safe-repl --show-repl-details --no-show-repl-details-once
 ```
 
-### CLI detail flags
+### REPL commands
 
-- `--show-repl-details`
-  - Prints startup summaries (builtins, AST nodes, imports).
-- `--show-repl-details-once` / `--no-show-repl-details-once`
-  - Overrides whether startup details print only once per session.
-  - If omitted, defaults are level-aware:
-    - `False` for `MINIMUM` / `LIMITED`
-    - `True` for `PERMISSIVE` / `UNSUPERVISED`
+- `:commands`
+    - Prints all non-hidden command help lines.
+- `:help <command>`
+    - Prints help for a single command.
+- `:level`
+    - Prints the current permission level.
+- `:functions`
+    - Prints available functions for the current session.
+- `:nodes`
+    - Prints allowed AST nodes for the current session.
+- `:imports`
+    - Prints imported symbols for the current session.
+- `:vars`
+    - Prints only user variable names.
+- `:vars values`
+    - Prints user variables with their values.
+
+Command lookup is case-sensitive first, then falls back to lowercase for `help` and `dispatch` lookups.
+
+### Custom REPL commands
+
+You can provide a custom command registry when constructing a session.
+
+```python
+from safe_repl import PermissionLevel, Permissions, SafeSession
+from safe_repl.repl_command_registry import CommandRegistry
+
+
+registry = CommandRegistry()
+
+@registry.command("ping", help_text="Use '{0}ping' to print pong.")
+def ping_command(_args: str, _session: SafeSession) -> None:
+    print("pong")
+
+
+perms = Permissions(base_perms=PermissionLevel.LIMITED)
+session = SafeSession(
+    perms,
+    repl_commands=registry,
+)
+session.repl()
+```
+
+Notes:
+
+- Handlers are looked up by command token (case-sensitive first, then lowercase fallback).
+- Handlers receive command args and session as `(args: str, session: SafeSession)`.
+- REPL dispatch receives prefix-stripped command input (`:ping` becomes `ping`).
+- To add commands without replacing defaults, create your own registry and register handlers with `@registry.command(...)`.
 
 ### CLI execution mode flag
 
@@ -311,13 +353,14 @@ Current automated test coverage includes:
 - `tests/test_cli.py`
   - CLI argument handling via unit-level monkeypatched invocations
   - CLI error/exit handling for invalid node/import args
-  - REPL detail flag forwarding and list-output modes
+    - REPL invocation and list-output modes
 - `tests/test_cli_integration.py`
   - End-to-end `python -m safe_repl` subprocess behavior
   - CLI success paths and non-zero exit error paths
 
-## TODO (deferred improvements)
+## TODO
 
+- Manually review new process code.
 - Replace denylist-heavy `UNSUPERVISED` policy behavior with a capability/profile-based model.
 - Improve timeout portability across environments (keep current behavior but add non-`SIGALRM` fallback strategy).
 

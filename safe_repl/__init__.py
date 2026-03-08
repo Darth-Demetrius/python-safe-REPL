@@ -21,6 +21,9 @@ from .imports import (
     validate_cli_args as _validate_cli_args,
 )
 from .policy import PermissionLevel, Permissions
+from .repl_command_registry import (
+    CommandRegistry,
+)
 from .session import SafeSession, repl
 
 __all__ = (
@@ -28,6 +31,7 @@ __all__ = (
     "Permissions",
     "ExecutionMode",
     "SafeSession",
+    "CommandRegistry",
     "safe_exec",
     "safe_exec_process_isolated",
     "supports_process_isolation",
