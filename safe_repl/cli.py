@@ -3,7 +3,6 @@
 import argparse
 import sys
 
-from .execution import ExecutionMode
 from .imports import SafeReplCliArgError, SafeReplImportError, validate_cli_args
 from .session import SafeSession
 
@@ -17,7 +16,6 @@ def _build_parser() -> argparse.ArgumentParser:
   %(prog)s                               # Limited permission level (default)
   %(prog)s --level MINIMUM               # Restrict to arithmetic only
   %(prog)s --level PERMISSIVE            # Allow classes and exception handling
-  %(prog)s --execution-mode process      # Run snippets in isolated subprocesses
   %(prog)s --level UNSUPERVISED          # Allow imports and most builtins
   %(prog)s --allow-functions map filter  # Add functions to default set
   %(prog)s --list-functions              # Show allowed functions and exit
@@ -43,6 +41,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Import library (bypasses AST validation)\n"
             "'module', 'module as alias', 'module:name', or 'module:*' are valid\n"
+            "'module:name' is the equivalent of 'from module import name'\n"
             "use a comma-separated list for multiple imports\n"
             "any use of this argument disables auto-import of math module "
             "(use --import \"\" to disable auto-import without adding any imports)"
@@ -54,20 +53,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--block-nodes", nargs="+", help="Remove AST nodes")
     parser.add_argument("--list-functions", action="store_true", help="Show allowed functions")
     parser.add_argument("--list-nodes", action="store_true", help="Show allowed AST nodes")
-    parser.add_argument(
-        "--execution-mode",
-        choices=ExecutionMode.choices(),
-        default=ExecutionMode.default().value,
-        help=(
-            "Execution backend. 'process' (default) runs snippets in isolated "
-            "subprocesses; 'in-process' runs in the current interpreter."
-        ),
-    )
     return parser
 
 
 def _print_allowed_functions(session: SafeSession) -> None:
-    """Print allowed builtin function names for the active session."""
+    """Print allowed builtin function names for the defined session."""
     builtins_scope = session.perms.globals_dict.get("__builtins__", {})
     if not isinstance(builtins_scope, dict):
         builtins_scope = {}
@@ -78,7 +68,7 @@ def _print_allowed_functions(session: SafeSession) -> None:
 
 
 def _print_allowed_nodes(session: SafeSession) -> None:
-    """Print allowed AST node names for the active session."""
+    """Print allowed AST node names for the defined session."""
     print("Allowed AST nodes:")
     for node in sorted(session.perms.allowed_nodes, key=lambda n: n.__name__):
         print(f"  {node.__name__}")

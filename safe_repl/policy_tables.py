@@ -119,7 +119,6 @@ ALLOWED_SYMBOLS_LIMITED = (
 )
 ALLOWED_SYMBOLS_PERMISSIVE = ALLOWED_SYMBOLS_LIMITED
 ALLOWED_SYMBOLS_UNSUPERVISED = set(dir(builtins))
-MEMORY_LIMIT_INFINITY = 2**63 - 1
 
 BLOCKED_SYMBOLS_UNSUPERVISED = {"breakpoint", "compile", "eval", "exec"}
 BLOCKED_SYMBOLS_PERMISSIVE = BLOCKED_SYMBOLS_UNSUPERVISED | {
@@ -174,16 +173,16 @@ DEFAULT_BLOCKED_SYMBOLS = (
     BLOCKED_SYMBOLS_UNSUPERVISED,
 )
 
-DEFAULT_TIMEOUT_SECONDS: tuple[float, float, float, float] = (
+DEFAULT_TIMEOUT_SECONDS: tuple[float, ...] = (
     0.1,
     0.5,
     10.0,
     float("inf"),
 )
 
-DEFAULT_MEMORY_LIMIT_BYTES: tuple[int, int, int, int] = (
+DEFAULT_MEMORY_LIMIT_BYTES: tuple[int | None, ...] = (
     64 * 1024 * 1024,
     256 * 1024 * 1024,
-    MEMORY_LIMIT_INFINITY,
-    MEMORY_LIMIT_INFINITY,
+    None,
+    None,
 )

@@ -9,7 +9,7 @@ import signal
 from types import FrameType
 import tracemalloc
 
-from .policy import MEMORY_LIMIT_INFINITY, Permissions
+from .policy import Permissions
 from .validator import validate_ast
 
 
@@ -23,19 +23,18 @@ def collect_allowed_names(
 ) -> set[str]:
     """Build name set visible to validation from locals + execution globals."""
     allowed_names = set(user_vars.keys())
+    allowed_names.update(name for name in global_scope if name != "__builtins__")
     for name, value in global_scope.items():
         if name == "__builtins__":
             continue
         if isinstance(value, dict):
-            allowed_names.update(value.keys())
-        else:
-            allowed_names.add(name)
+            allowed_names.update(value)
     return allowed_names
 
 
-def _configure_memory_tracking(memory_limit: int) -> bool:
+def _configure_memory_tracking(memory_limit: int | None) -> bool:
     """Enable memory peak tracking when a finite limit is configured."""
-    memory_limit_active = memory_limit < MEMORY_LIMIT_INFINITY
+    memory_limit_active = memory_limit is not None
     if not memory_limit_active:
         return False
 
@@ -48,9 +47,9 @@ def _configure_memory_tracking(memory_limit: int) -> bool:
     return trace_started
 
 
-def _start_timeout(timeout_seconds: float) -> tuple[SignalHandler, TimerState | None]:
+def _start_timeout(timeout_seconds: float | None) -> tuple[SignalHandler, TimerState | None]:
     """Install SIGALRM timeout handler and return previous signal/timer state."""
-    if timeout_seconds >= float("inf"):
+    if timeout_seconds is None:
         return None, None
 
     previous_handler = signal.getsignal(signal.SIGALRM)
@@ -75,12 +74,11 @@ def safe_exec(
     Returns expression result for single-expression input, otherwise `None`.
     """
     global_scope = perms.globals_dict
-    timeout_seconds = perms.timeout_seconds
     memory_limit = perms.memory_limit_bytes
     trace_started = _configure_memory_tracking(memory_limit)
-    memory_limit_active = memory_limit < MEMORY_LIMIT_INFINITY
+    memory_limit_active = memory_limit is not None
     allowed_names = collect_allowed_names(user_vars, global_scope)
-    previous_handler, previous_timer = _start_timeout(timeout_seconds)
+    previous_handler, previous_timer = _start_timeout(perms.timeout_seconds)
 
     try:
         tree = ast.parse(code, mode="exec")

@@ -51,22 +51,6 @@ def test_cli_invokes_repl(monkeypatch: pytest.MonkeyPatch) -> None:
     assert dummy.repl_calls == 1
 
 
-def test_cli_parses_execution_mode_process(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: dict[str, object] = {}
-    dummy = _DummySession()
-
-    def _from_cli_args(_cls: type[cli.SafeSession], args: argparse.Namespace) -> _DummySession:
-        seen["execution_mode"] = args.execution_mode
-        return dummy
-
-    monkeypatch.setattr(cli.SafeSession, "from_cli_args", classmethod(_from_cli_args))
-    monkeypatch.setattr("sys.argv", ["safe-repl", "--execution-mode", "process"])
-
-    cli.main()
-
-    assert seen["execution_mode"] == "process"
-
-
 def test_cli_list_functions_prints_names(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

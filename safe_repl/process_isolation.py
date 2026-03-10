@@ -14,10 +14,9 @@ from .process_control import (
     await_worker_response,
     finalize_process,
     spawn_context_process,
-    supports_process_isolation,
-    timeout_for_perms,
     validate_process_isolation_support,
 )
+from .sandbox import with_limits, attach_pid_to_cgroup
 from .process_protocol import PERSISTENT_OP_CLOSE, PERSISTENT_OP_EXEC, PERSISTENT_OP_RESET
 from .process_worker import (
     apply_success_response_to_user_vars,
@@ -32,17 +31,33 @@ def _start_worker_process(
     target: Callable[..., None],
     kwargs_builder: Callable[[Connection], dict[str, object]],
     duplex: bool,
+    memory_bytes: int | None = None,
 ) -> tuple[Connection, BaseProcess]:
     """Create and start a worker process with a connected IPC pipe."""
     ctx = multiprocessing.get_context(start_method)
     parent_conn, child_conn = ctx.Pipe(duplex=duplex)
+    # Decorate the target to set RLIMIT_AS in the child (if requested).
+    if memory_bytes is not None:
+        wrapped_target = with_limits(memory_bytes)(target)
+    else:
+        wrapped_target = target
+
     process = spawn_context_process(
         context=ctx,
-        target=target,
+        target=wrapped_target,
         kwargs=kwargs_builder(child_conn),
         daemon=True,
     )
+
     process.start()
+    # best-effort attach to cgroup (may fail without privileges)
+    try:
+        pid = process.pid
+        if pid is not None:
+            attach_pid_to_cgroup(pid, memory_bytes)
+    except Exception:
+        pass
+
     child_conn.close()
     return parent_conn, process
 
@@ -72,20 +87,19 @@ def safe_exec_process_isolated(
             "perms": perms,
         },
         duplex=False,
+        memory_bytes=perms.memory_limit_bytes,
     )
 
-    timeout = timeout_for_perms(perms)
-
     try:
-        response = await_worker_response(parent_conn, process, timeout=timeout)
+        response = await_worker_response(parent_conn, process, timeout=perms.timeout_seconds)
     finally:
         parent_conn.close()
         finalize_process(process)
     return apply_success_response_to_user_vars(response, user_vars)
 
 
-class PersistentSubprocessSession:
-    """Long-lived subprocess-backed executor for one `SafeSession` instance."""
+class WorkerSession:
+    """Long-lived worker executor for one `SafeSession` instance."""
 
     def __init__(
         self,
@@ -112,7 +126,7 @@ class PersistentSubprocessSession:
         )
 
     def open(self) -> None:
-        """Start persistent worker if it is not already running."""
+        """Start worker if it is not already running."""
         if self.is_open:
             return
 
@@ -125,13 +139,14 @@ class PersistentSubprocessSession:
                 "perms": self._perms,
             },
             duplex=True,
+            memory_bytes=self._perms.memory_limit_bytes,
         )
 
         self._parent_conn = parent_conn
         self._process = process
 
     def close(self) -> None:
-        """Close persistent worker and release process resources."""
+        """Close worker and release process resources."""
         process = self._process
         parent_conn = self._parent_conn
         self._process = None
@@ -156,15 +171,15 @@ class PersistentSubprocessSession:
             finalize_process(process)
 
     def reopen(self) -> None:
-        """Restart persistent worker with current local user variable state."""
+        """Restart worker with current local user variable state."""
         self.close()
         self.open()
 
     def exec(self, code: str) -> object | None:
-        """Execute one snippet through the persistent worker."""
+        """Execute one snippet through the worker."""
         response = self._request(
             {"op": PERSISTENT_OP_EXEC, "code": code},
-            timeout=timeout_for_perms(self._perms),
+            timeout=self._perms.timeout_seconds,
         )
         return apply_success_response_to_user_vars(response, self._user_vars)
 
@@ -172,14 +187,14 @@ class PersistentSubprocessSession:
         """Clear worker and local user variable state."""
         response = self._request(
             {"op": PERSISTENT_OP_RESET, "user_vars": {}},
-            timeout=timeout_for_perms(self._perms),
+            timeout=self._perms.timeout_seconds,
         )
         apply_success_response_to_user_vars(response, self._user_vars)
 
     def _request(self, command: dict[str, object], *, timeout: float | None) -> object:
         """Send command to worker and return response payload."""
         if not self.is_open:
-            raise RuntimeError("Persistent subprocess session is not open.")
+            raise RuntimeError("Worker session is not open.")
 
         assert self._parent_conn is not None
         assert self._process is not None
@@ -191,11 +206,10 @@ class PersistentSubprocessSession:
             raise
         except Exception as exc:  # noqa: BLE001
             self.close()
-            raise RuntimeError(f"Persistent subprocess session failed: {exc}") from exc
+            raise RuntimeError(f"Worker session failed: {exc}") from exc
 
 
 __all__ = [
-    "PersistentSubprocessSession",
+    "WorkerSession",
     "safe_exec_process_isolated",
-    "supports_process_isolation",
 ]

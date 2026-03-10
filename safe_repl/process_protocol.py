@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Final, TypedDict
+from typing import Final, Literal, TypedDict, cast
 
 
 PERSISTENT_OP_EXEC: Final[str] = "exec"
@@ -13,6 +13,8 @@ PERSISTENT_OPS: Final[set[str]] = {
     PERSISTENT_OP_RESET,
     PERSISTENT_OP_CLOSE,
 }
+
+PersistentOp = Literal["exec", "reset", "close"]
 
 
 class WorkerSuccessResponse(TypedDict):
@@ -31,27 +33,15 @@ class WorkerErrorResponse(TypedDict):
     message: str
 
 
-class WorkerCommand(TypedDict, total=False):
+class WorkerCommand(TypedDict):
     """Persistent worker command payload."""
 
-    op: str
-    code: str
+    op: PersistentOp
+    code: str | None
     user_vars: dict[str, object]
 
 
 WorkerResponse = WorkerSuccessResponse | WorkerErrorResponse
-
-
-def _coerce_optional_field[
-    TValue
-](payload: dict[str, object], key: str, expected_type: type[TValue]) -> TValue | None:
-    """Read optional field and validate exact runtime type when present."""
-    value = payload.get(key)
-    if value is None:
-        return None
-    if not isinstance(value, expected_type):
-        return None
-    return value
 
 
 def coerce_worker_command(payload: object) -> WorkerCommand | None:
@@ -59,24 +49,32 @@ def coerce_worker_command(payload: object) -> WorkerCommand | None:
     if not isinstance(payload, dict):
         return None
 
-    command: WorkerCommand = {}
+    op: PersistentOp | None = None
+    code: str | None = None
+    user_vars: dict[str, object] = {}
 
-    op = _coerce_optional_field(payload, "op", str)
-    if op is None and "op" in payload:
+    for key, value in payload.items():
+        match key:
+            case "op":
+                if not isinstance(value, str) or value not in PERSISTENT_OPS:
+                    return None
+                op = cast(PersistentOp, value)
+            case "code":
+                if not isinstance(value, str):
+                    return None
+                code = value
+            case "user_vars":
+                if not isinstance(value, dict):
+                    return None
+                user_vars = cast(dict[str, object], value)
+            case _:
+                continue
+
+    if op is None:
         return None
-    if op is not None:
-        command["op"] = op
 
-    code = _coerce_optional_field(payload, "code", str)
-    if code is None and "code" in payload:
-        return None
-    if code is not None:
-        command["code"] = code
-
-    user_vars = _coerce_optional_field(payload, "user_vars", dict)
-    if user_vars is None and "user_vars" in payload:
-        return None
-    if user_vars is not None:
-        command["user_vars"] = user_vars
-
-    return command
+    return {
+        "op": op,
+        "code": code,
+        "user_vars": user_vars,
+    }

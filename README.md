@@ -6,11 +6,11 @@ Safe Python REPL with tiered permission levels for restricted code execution.
 
 The package-level imports from `safe_repl` are the supported public API surface:
 
-- `PermissionLevel`, `Permissions`, `ExecutionMode`, `SafeSession`
-- `safe_exec`, `repl`, `main`
+- `PermissionLevel`, `Permissions`, `SafeSession`
+- `safe_exec`, `validate_ast`, `repl`, `main`
 - `SafeReplImportError`, `SafeReplCliArgError`
 
-Submodules (`safe_repl.policy`, `safe_repl.engine`, `safe_repl.validator`, `safe_repl.execution`, `safe_repl.process_isolation`, etc.) are implementation details and may change more frequently.
+Submodules (`safe_repl.policy`, `safe_repl.engine`, `safe_repl.validator`, `safe_repl.process_isolation`, etc.) are implementation details and may change more frequently.
 
 ## Install
 
@@ -53,16 +53,12 @@ print(result)  # 14
 ### Types
 
 - `PermissionLevel`: `MINIMUM`, `LIMITED`, `PERMISSIVE`, `UNSUPERVISED`
-    - Invalid values warn and default to level `0` (`MINIMUM`).
-- `ExecutionMode`: `IN_PROCESS` (`"in-process"`), `PROCESS` (`"process"`)
-    - Used by `SafeSession`/`repl` to select in-process vs subprocess execution.
-    - String inputs are accepted for convenience and normalized to enum values.
-    - Default mode is `PROCESS`.
+  - Invalid values warn and default to level `0` (`MINIMUM`).
 - `Permissions`: resolved policy object used by execution and REPL
-    - Constructor defaults to `base_perms=PermissionLevel.LIMITED`.
-    - `allow_symbols`, `block_symbols`, `allow_nodes`, `block_nodes`, and `imports` are optional (`None` defaults to empty values).
-    - Supports optional per-instance overrides:
-        `timeout_seconds: float | None = None`, `memory_limit_bytes: int | None = None`.
+  - Constructor defaults to `base_perms=PermissionLevel.LIMITED`.
+  - `allow_symbols`, `block_symbols`, `allow_nodes`, `block_nodes`, and `imports` are optional (`None` defaults to empty values).
+  - Supports optional per-instance overrides:
+      `timeout_seconds: float | None = None`, `memory_limit_bytes: int | None = None`.
 - `SafeSession`: stateful executor that keeps `user_vars` across calls
 
 ### Permission-level attribute access
@@ -77,53 +73,60 @@ print(result)  # 14
 ### Functions
 
 - `safe_exec(code: str, user_vars: dict[str, object], *, perms: Permissions) -> object | None`
-    - Low-level stateless execution function.
-    - Parses, validates, and executes one snippet under explicit permissions.
+  - Low-level stateless execution function.
+  - Parses, validates, and executes one snippet under explicit permissions.
+- `validate_ast(tree: ast.AST, user_vars: dict[str, object], allowed_names: set[str], perms: Permissions) -> None`
+  - Validates one parsed AST against active security rules.
 - `Permissions.set_timeout_seconds(seconds: float) -> None`
-    - Instance method that overrides timeout for this `Permissions` object.
+  - Instance method that overrides timeout for this `Permissions` object.
 - `Permissions.set_memory_limit_bytes(bytes_limit: int) -> None`
-    - Instance method that overrides memory limit for this `Permissions` object.
-- `repl(*, perms: Permissions, execution_mode: ExecutionMode | str | None = None) -> None`
-    - Starts the interactive REPL loop (internally uses `SafeSession`).
+  - Instance method that overrides memory limit for this `Permissions` object.
+- `repl(*, perms: Permissions) -> None`
+  - Starts the interactive REPL loop (internally uses `SafeSession`).
 - `main() -> None`
-    - CLI entrypoint used by `safe-repl` and `python -m safe_repl`.
+  - CLI entrypoint used by `safe-repl` and `python -m safe_repl`.
 
 ### SafeSession methods
 
-- `SafeSession(perms: Permissions, user_vars: dict[str, object] | None = None, execution_mode: ExecutionMode | str = ExecutionMode.PROCESS)`
+- `SafeSession(perms: Permissions, user_vars: dict[str, object] | None = None)`
 - `SafeSession.from_cli_args(args: argparse.Namespace, ..., user_vars: dict[str, object] | None = None) -> SafeSession`
-    - Builds a session from parsed CLI args (same logic used by `main()`).
-- `exec(code: str, *, execution_mode: ExecutionMode | str | None = None) -> object | None`
-    - Executes code using the session's permissions and persistent variables.
-    - Uses the session's saved mode unless an explicit override is passed.
+  - Builds a session from parsed CLI args (same logic used by `main()`).
+- `exec(code: str) -> object | None`
+  - Executes code using session permissions and persistent variables.
+  - Opens a worker session on first use and reuses it for subsequent `exec(...)` calls.
 - `reset() -> None`
-    - Clears session `user_vars`.
-- `open_subprocess_session() -> None`
-    - Starts a long-lived subprocess worker for process-mode execution.
-- `close_subprocess_session() -> None`
-    - Stops the long-lived subprocess worker if active.
-- `reopen_subprocess_session() -> None`
-    - Restarts the long-lived subprocess worker using current local state.
-- `repl(*, execution_mode: ExecutionMode | str | None = None, command_char: str | None = None) -> None`
-    - Runs interactive REPL bound to this session.
-    - Prints a short startup hint for exiting and discovering commands.
-    - Use REPL commands to inspect available functions, nodes, imports, level, and user vars.
-    - `command_char` sets the REPL command prefix (for example `:` or `!`) and persists on the session.
-    - Uses the session's saved mode unless an explicit override is passed.
-    - In `process` mode, opens a persistent subprocess worker for the REPL run.
+  - Clears session `user_vars`.
+- `open_worker_session() -> None`
+  - Starts the session worker if it is not already running.
+- `close_worker_session() -> None`
+  - Stops the session worker if active.
+- `repl(*, command_char: str | None = None) -> None`
+  - Runs interactive REPL bound to this session.
+  - Prints a short startup hint for exiting and discovering commands.
+  - Use REPL commands to inspect available functions, nodes, imports, level, and user vars.
+  - `command_char` sets the REPL command prefix (for example `:` or `!`) and persists on the session.
+  - Opens one worker session per REPL run and reuses it for every entered command.
 
 ### Internal module split (implementation detail)
 
-- `safe_repl.execution`
-    - Execution-mode parsing and high-level dispatch helpers.
 - `safe_repl.process_isolation`
-    - Public process-isolated execution APIs and persistent session orchestration.
+  - Worker runtime APIs and process isolation orchestration.
 - `safe_repl.process_control`
-    - Process lifecycle, start-method validation, and timeout coordination helpers.
+  - Process lifecycle, start-method validation, timeout enforcement, and worker finalization helpers.
 - `safe_repl.process_worker`
-    - Worker-side execution, command handling, and response normalization.
+  - Worker-side execution, command handling, and response normalization.
 - `safe_repl.process_protocol`
-    - Shared IPC protocol constants and typed worker payload schemas.
+  - Shared IPC protocol constants and typed worker payload schemas.
+  - Worker command parsing constrains `op` to `exec|reset|close` and returns normalized command payloads with required keys.
+- `safe_repl.sandbox`
+  - Linux-focused resource limit helpers for process isolation (`with_limits`, cgroup attach helpers).
+
+## Security benchmarking
+
+- `tools/bench_validator.py`
+  - Micro-benchmarks for validator-only `validate_ast(...)` hot paths.
+- `tools/bench_security.py`
+  - Benchmarks import-time and runtime costs across `policy` and `validator` surfaces.
 
 Example:
 
@@ -134,31 +137,21 @@ from safe_repl import PermissionLevel, Permissions, SafeSession
 
 session = SafeSession(Permissions(base_perms=PermissionLevel.LIMITED, imports={"math": math}))
 print(session.exec("math.sqrt(16)"))  # 4.0
-
-# Process-isolated mode
-session = SafeSession(
-    Permissions(base_perms=PermissionLevel.LIMITED, imports={"math": math}),
-    execution_mode="process",
-)
-print(session.exec("math.sqrt(25)"))  # 5.0
 ```
 
-### Manual persistent subprocess lifecycle
+### Manual worker session lifecycle
 
 ```python
-from safe_repl import ExecutionMode, PermissionLevel, Permissions, SafeSession
+from safe_repl import PermissionLevel, Permissions, SafeSession
 
-session = SafeSession(
-    Permissions(base_perms=PermissionLevel.LIMITED),
-    execution_mode=ExecutionMode.PROCESS,
-)
+session = SafeSession(Permissions(base_perms=PermissionLevel.LIMITED))
 
-session.open_subprocess_session()
+session.open_worker_session()
 try:
     session.exec("x = 10")
     print(session.exec("x + 5"))  # 15
 finally:
-    session.close_subprocess_session()
+  session.close_worker_session()
 ```
 
 ### Minimal embedding pattern
@@ -270,28 +263,27 @@ Examples:
 ```bash
 safe-repl --level MINIMUM
 safe-repl --level PERMISSIVE
-safe-repl --execution-mode process
 safe-repl --import "json"
 ```
 
 ### REPL commands
 
 - `:commands`
-    - Prints all non-hidden command help lines.
+  - Prints all non-hidden command help lines.
 - `:help <command>`
-    - Prints help for a single command.
+  - Prints help for a single command.
 - `:level`
-    - Prints the current permission level.
+  - Prints the current permission level.
 - `:functions`
-    - Prints available functions for the current session.
+  - Prints available functions for the current session.
 - `:nodes`
-    - Prints allowed AST nodes for the current session.
+  - Prints allowed AST nodes for the current session.
 - `:imports`
-    - Prints imported symbols for the current session.
+  - Prints imported symbols for the current session.
 - `:vars`
-    - Prints only user variable names.
+  - Prints only user variable names.
 - `:vars values`
-    - Prints user variables with their values.
+  - Prints user variables with their values.
 
 Command lookup is case-sensitive first, then falls back to lowercase for `help` and `dispatch` lookups.
 
@@ -326,19 +318,19 @@ Notes:
 - REPL dispatch receives prefix-stripped command input (`:ping` becomes `ping`).
 - To add commands without replacing defaults, create your own registry and register handlers with `@registry.command(...)`.
 
-### CLI execution mode flag
+### Process-only execution note
 
-- `--execution-mode {in-process,process}`
-    - `process` (default): executes snippets in isolated subprocesses (stronger containment).
-    - `in-process`: executes snippets in the current interpreter process.
+- REPL/session execution is process-isolated by default and currently has no mode-selection flag.
+- Timeouts use `Permissions.timeout_seconds` directly for worker response polling and terminate the worker on timeout.
+- Update path: alternate execution strategies may be added later behind explicit opt-in API/CLI flags.
 
 ### CLI import flag behavior
 
 - `--import SPEC`
-    - Supports `module`, `module as alias`, `module:name`, and `module:*`.
-    - If `--import` is not used, CLI defaults to importing `math:*`.
-    - Any use of `--import` disables default `math:*` auto-import.
-    - `--import ""` disables auto-import without adding any imports.
+  - Supports `module`, `module as alias`, `module:name`, and `module:*`.
+  - If `--import` is not used, CLI defaults to importing `math:*`.
+  - Any use of `--import` disables default `math:*` auto-import.
+  - `--import ""` disables auto-import without adding any imports.
 
 ## Testing matrix
 
@@ -357,10 +349,36 @@ Current automated test coverage includes:
 - `tests/test_cli_integration.py`
   - End-to-end `python -m safe_repl` subprocess behavior
   - CLI success paths and non-zero exit error paths
+- `tests/test_process_control.py`
+  - Process lifecycle validation and timeout/finalization behavior
+- `tests/test_process_protocol.py`
+  - Worker command payload coercion and normalization rules
+- `tests/test_security_api.py`
+  - Package-level and policy-level AST validation API behavior
 
 ## TODO
 
-- Manually review new process code.
+- Manually review code.
+  - [x] `__init__.py`
+  - [x] `__main__.py`
+  - [x] `cli.py`
+  - [ ] `engine.py`
+  - [x] `imports.py`
+  - [x] `policy_tables.py`
+  - [x] `policy.py`
+  - [ ] `process_control.py`
+  - [ ] `process_isolation.py`
+  - [ ] `process_protocol.py`
+  - [ ] `process_worker.py`
+  - [x] `repl_command_registry.py`
+  - [ ] `sandbox.py`
+  - [ ] `session.py`
+  - [x] `validator.py`
+- Add ability to create sessions with custom command registries for extensible REPL commands.
+- Add ability to create custom REPL commands during runtime via session API.
+- Use `colorama` or similar for colored CLI output.
+- Graceful handling of lumped I/O à la discord messaging. (don't send a bajillion individual messages in response to a single message)
+- Graceful shutdown handling for subprocess workers (for example on `KeyboardInterrupt`).
 - Replace denylist-heavy `UNSUPERVISED` policy behavior with a capability/profile-based model.
 - Improve timeout portability across environments (keep current behavior but add non-`SIGALRM` fallback strategy).
 
@@ -370,16 +388,16 @@ Current process isolation improves containment, but stronger boundaries can be a
 The most promising near-term options are Linux namespaces and microVM execution.
 
 - Linux namespaces (recommended next step)
-    - Run workers in isolated `user`, `pid`, `mount`, and `net` namespaces.
-    - Combine with `no_new_privs`, read-only mounts, and restricted `/tmp`.
-    - Pair with seccomp and cgroup limits for syscall and resource control.
+  - Run workers in isolated `user`, `pid`, `mount`, and `net` namespaces.
+  - Combine with `no_new_privs`, read-only mounts, and restricted `/tmp`.
+  - Pair with seccomp and cgroup limits for syscall and resource control.
 - MicroVMs (strongest practical boundary)
-    - Run each execution in a minimal VM (for example Firecracker-class isolation).
-    - Provides stronger kernel boundary than process/container isolation.
-    - Higher startup/runtime overhead, but best fit for multi-tenant untrusted code.
+  - Run each execution in a minimal VM (for example Firecracker-class isolation).
+  - Provides stronger kernel boundary than process/container isolation.
+  - Higher startup/runtime overhead, but best fit for multi-tenant untrusted code.
 - Optional middle layer: rootless containers
-    - Easier operationally than microVMs, stronger than plain processes.
-    - Still shares host kernel, so boundary is weaker than microVM/VM isolation.
+  - Easier operationally than microVMs, stronger than plain processes.
+  - Still shares host kernel, so boundary is weaker than microVM/VM isolation.
 
 ## Notes
 

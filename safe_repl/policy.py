@@ -16,17 +16,7 @@ from .policy_tables import (
     DEFAULT_BLOCKED_SYMBOLS,
     DEFAULT_MEMORY_LIMIT_BYTES,
     DEFAULT_TIMEOUT_SECONDS,
-    MEMORY_LIMIT_INFINITY,
 )
-
-
-def _build_builtins_scope(allowed_symbols: set[str]) -> dict[str, object]:
-    """Create restricted `__builtins__` mapping for execution globals."""
-    return {
-        name: getattr(builtins, name)
-        for name in allowed_symbols
-        if hasattr(builtins, name)
-    }
 
 
 class PermissionLevel(IntEnum):
@@ -84,11 +74,20 @@ class Permissions:
     A `Permissions` object combines a baseline permission level with optional
     allow/block overrides and import injections, then computes concrete symbol
     and AST constraints used by the validator/execution engine.
+    
+    Args: (all optional with defaults)
+    - `base_perms`: Baseline permission level to build from.
+    - `allow_symbols`: Additional built-in symbols to allow beyond the baseline.
+    - `block_symbols`: Built-in symbols to block beyond the baseline.
+    - `allow_nodes`: Additional AST node types to allow beyond the baseline.
+    - `block_nodes`: AST node types to block beyond the baseline.
+    - `imports`: Mapping of symbol names to objects to inject into the execution environment as imports.
+    - `timeout_seconds`: Optional execution timeout in seconds (float('inf') for no timeout).
+    - `memory_limit_bytes`: Optional memory limit in bytes (float('inf') for no limit).
 
     Defaults:
     - `base_perms` defaults to `PermissionLevel.LIMITED`.
-    - Per-instance timeout/memory limits initialize from
-      `DEFAULT_TIMEOUT_SECONDS` / `DEFAULT_MEMORY_LIMIT_BYTES` by level.
+    - All other args default to empty sets/dicts or `None` (which resolves to level defaults for time/memory).
     """
 
     def __init__(
@@ -111,11 +110,9 @@ class Permissions:
 
         self.level = base_perms
         self.modified = bool(allow_symbols or block_symbols or allow_nodes or block_nodes)
-        self.timeout_seconds = (
-            DEFAULT_TIMEOUT_SECONDS[self.level]
-            if timeout_seconds is None
-            else timeout_seconds
-        )
+        self.set_timeout_seconds(
+            DEFAULT_TIMEOUT_SECONDS[self.level] if timeout_seconds is None else timeout_seconds
+        )  # Use setter to ensure proper semantics
         self.memory_limit_bytes = (
             DEFAULT_MEMORY_LIMIT_BYTES[self.level]
             if memory_limit_bytes is None
@@ -128,12 +125,15 @@ class Permissions:
         ) - blocked_symbols
         if self.level >= PermissionLevel.PERMISSIVE:
             self.allowed_symbols.add("__build_class__")
-        self.imported_symbols = set(imports.keys()) - blocked_symbols
+        self.imported_symbols = set(imports) - blocked_symbols
         self.allowed_symbols |= self.imported_symbols
 
-        self.globals_dict: dict[str, object] = {
-            "__builtins__": _build_builtins_scope(self.allowed_symbols),
-            "__name__": "__safe_repl__",
+        builtins_map = builtins.__dict__
+        self.globals_dict: dict[str, object] = {"__name__": "__safe_repl__"}
+        self.globals_dict["__builtins__"] = {
+            name: builtins_map[name]
+            for name in self.allowed_symbols
+            if name in builtins_map
         }
         self.globals_dict.update(
             {name: obj for name, obj in imports.items() if name not in blocked_symbols}
@@ -154,17 +154,19 @@ class Permissions:
             return f"{name} with imports: {', '.join(sorted(self.imported_symbols))}"
         return f"{name} with {len(self.imported_symbols)} imports"
 
-    def set_timeout_seconds(self, seconds: float) -> None:
-        """Override this instance's execution timeout in seconds."""
-        self.timeout_seconds = seconds
+    def set_timeout_seconds(self, seconds: float | None) -> None:
+        """Set this instance's execution timeout in seconds (None for no timeout)."""
+        # Convert timeout to `Connection.poll` timeout semantics.
+        if seconds is None or seconds == float("inf"):
+            self.timeout_seconds = None
+            return
+        self.timeout_seconds = max(seconds, 0.0)
 
     def set_memory_limit_bytes(self, bytes_limit: int) -> None:
         """Override this instance's memory limit in bytes."""
         self.memory_limit_bytes = bytes_limit
 
-
 __all__ = (
-    "MEMORY_LIMIT_INFINITY",
     "PermissionLevel",
     "Permissions",
 )

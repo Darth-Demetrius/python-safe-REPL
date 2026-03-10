@@ -12,7 +12,6 @@ from safe_repl.imports import (
 )
 from safe_repl.repl_command_registry import CommandRegistry
 from safe_repl import (
-    ExecutionMode,
     PermissionLevel,
     Permissions,
     repl as run_repl,
@@ -94,16 +93,6 @@ def test_safe_session_constructor_with_imports() -> None:
     assert session.exec("math.sqrt(9)") == 3.0
 
 
-def test_safe_session_constructor_process_mode() -> None:
-    session = SafeSession(Permissions(base_perms=PermissionLevel.LIMITED), execution_mode="process")
-    assert session.execution_mode is ExecutionMode.PROCESS
-
-
-def test_safe_session_constructor_rejects_invalid_execution_mode() -> None:
-    with pytest.raises(ValueError, match="Invalid execution mode"):
-        SafeSession(Permissions(base_perms=PermissionLevel.LIMITED), execution_mode="not-a-mode")  # type: ignore[arg-type]
-
-
 def test_safe_session_from_cli_args_uses_default_math_imports() -> None:
     args = argparse.Namespace(
         level="LIMITED",
@@ -116,7 +105,6 @@ def test_safe_session_from_cli_args_uses_default_math_imports() -> None:
         list_nodes=False,
     )
     session = SafeSession.from_cli_args(args)
-    assert session.execution_mode is ExecutionMode.PROCESS
     assert session.exec("sqrt(16)") == 4.0
 
 
@@ -130,10 +118,8 @@ def test_safe_session_from_cli_args_with_explicit_import() -> None:
         block_nodes=None,
         list_functions=False,
         list_nodes=False,
-        execution_mode="process",
     )
     session = SafeSession.from_cli_args(args)
-    assert session.execution_mode is ExecutionMode.PROCESS
     assert session.exec("j.dumps({'x': 1})") == '{"x": 1}'
 
 
@@ -147,10 +133,8 @@ def test_safe_session_from_cli_args_empty_import_disables_default_math() -> None
         block_nodes=None,
         list_functions=False,
         list_nodes=False,
-        execution_mode="process",
     )
     session = SafeSession.from_cli_args(args)
-    assert session.execution_mode is ExecutionMode.PROCESS
     with pytest.raises(ValueError, match="Function 'sqrt' is not allowed"):
         session.exec("sqrt(16)")
 
@@ -573,7 +557,7 @@ def test_repl_persists_custom_command_char_between_runs(
     assert "pong" in second_output
 
 
-def test_repl_uses_session_execution_mode_by_default(
+def test_repl_uses_worker_session(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -584,7 +568,7 @@ def test_repl_uses_session_execution_mode_by_default(
 
     tracker: _Tracker = {"opened": 0, "closed": 0, "calls": []}
 
-    class _FakePersistentSubprocessSession:
+    class _FakeWorkerSession:
         def __init__(self, *, perms: Permissions, user_vars: dict[str, object]) -> None:
             self._user_vars = user_vars
 
@@ -602,8 +586,8 @@ def test_repl_uses_session_execution_mode_by_default(
             self._user_vars.clear()
 
     inputs = iter(["2 + 2", "quit"])
-    session = SafeSession(activate(PermissionLevel.LIMITED), execution_mode="process")
-    monkeypatch.setattr("safe_repl.session.PersistentSubprocessSession", _FakePersistentSubprocessSession)
+    session = SafeSession(activate(PermissionLevel.LIMITED))
+    monkeypatch.setattr("safe_repl.session.WorkerSession", _FakeWorkerSession)
     monkeypatch.setattr("builtins.input", lambda _prompt: next(inputs))
 
     session.repl()
@@ -615,38 +599,49 @@ def test_repl_uses_session_execution_mode_by_default(
     assert "42" in output
 
 
-def test_repl_execution_mode_override_uses_in_process(
+def test_repl_does_not_use_safe_session_exec(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    class _FailIfInstantiated:
+    class _FakeWorkerSession:
         def __init__(self, *, perms: Permissions, user_vars: dict[str, object]) -> None:
-            raise AssertionError("Persistent subprocess session should not be used")
+            self._user_vars = user_vars
 
-    inputs = iter(["2 + 2", "quit"])
-    session = SafeSession(activate(PermissionLevel.LIMITED), execution_mode="process")
-    monkeypatch.setattr("safe_repl.session.PersistentSubprocessSession", _FailIfInstantiated)
+        def open(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        def exec(self, code: str) -> object | None:
+            return 7
+
+        def reset(self) -> None:
+            self._user_vars.clear()
+
+    inputs = iter(["3 + 4", "quit"])
+    session = SafeSession(activate(PermissionLevel.LIMITED))
+    monkeypatch.setattr("safe_repl.session.WorkerSession", _FakeWorkerSession)
+    monkeypatch.setattr(
+        SafeSession,
+        "exec",
+        lambda self, code: (_ for _ in ()).throw(AssertionError("SafeSession.exec should not be used by repl")),
+    )
     monkeypatch.setattr("builtins.input", lambda _prompt: next(inputs))
 
-    session.repl(execution_mode="in-process")
+    session.repl()
     output = capsys.readouterr().out
 
-    assert "4" in output
+    assert "7" in output
 
 
-def test_exec_rejects_invalid_execution_mode_override() -> None:
-    session = SafeSession(activate(PermissionLevel.LIMITED))
-    with pytest.raises(ValueError, match="Invalid execution mode"):
-        session.exec("2 + 2", execution_mode="nope")  # type: ignore[arg-type]
-
-
-def test_module_repl_forwards_execution_mode_override(
+def test_module_repl_uses_worker_session(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     tracker: dict[str, object] = {"calls": []}
 
-    class _FakePersistentSubprocessSession:
+    class _FakeWorkerSession:
         def __init__(self, *, perms: Permissions, user_vars: dict[str, object]) -> None:
             self._user_vars = user_vars
 
@@ -665,23 +660,23 @@ def test_module_repl_forwards_execution_mode_override(
         def reset(self) -> None:
             self._user_vars.clear()
 
-    monkeypatch.setattr("safe_repl.session.PersistentSubprocessSession", _FakePersistentSubprocessSession)
+    monkeypatch.setattr("safe_repl.session.WorkerSession", _FakeWorkerSession)
     inputs = iter(["2 + 2", "quit"])
     monkeypatch.setattr("builtins.input", lambda _prompt: next(inputs))
 
-    run_repl(perms=activate(PermissionLevel.LIMITED), execution_mode="process")
+    run_repl(perms=activate(PermissionLevel.LIMITED))
     output = capsys.readouterr().out
 
     assert tracker["calls"] == ["2 + 2"]
     assert "123" in output
 
 
-def test_reset_propagates_to_open_persistent_subprocess_session(
+def test_reset_propagates_to_open_worker_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tracker = {"reset": 0}
 
-    class _FakePersistentSubprocessSession:
+    class _FakeWorkerSession:
         def __init__(self, *, perms: Permissions, user_vars: dict[str, object]) -> None:
             self._user_vars = user_vars
 
@@ -698,9 +693,9 @@ def test_reset_propagates_to_open_persistent_subprocess_session(
             tracker["reset"] += 1
             self._user_vars.clear()
 
-    session = SafeSession(activate(PermissionLevel.LIMITED), user_vars={"x": 1}, execution_mode="process")
-    monkeypatch.setattr("safe_repl.session.PersistentSubprocessSession", _FakePersistentSubprocessSession)
-    session.open_subprocess_session()
+    session = SafeSession(activate(PermissionLevel.LIMITED), user_vars={"x": 1})
+    monkeypatch.setattr("safe_repl.session.WorkerSession", _FakeWorkerSession)
+    session.open_worker_session()
 
     session.reset()
 

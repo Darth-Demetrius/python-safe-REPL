@@ -6,12 +6,11 @@ import builtins
 from multiprocessing.connection import Connection
 
 from .engine import safe_exec
-from .policy import MEMORY_LIMIT_INFINITY, Permissions
+from .policy import Permissions
 from .process_protocol import (
     PERSISTENT_OP_CLOSE,
     PERSISTENT_OP_EXEC,
     PERSISTENT_OP_RESET,
-    PERSISTENT_OPS,
     WorkerCommand,
     WorkerErrorResponse,
     WorkerResponse,
@@ -55,11 +54,11 @@ def raise_worker_exception(exception_type: str, message: str) -> None:
     raise RuntimeError(f"Worker raised {exception_type}: {message}")
 
 
-def apply_worker_memory_limit(memory_limit_bytes: int) -> None:
+def apply_worker_memory_limit(memory_limit_bytes: int | None) -> None:
     """Apply best-effort address-space/process memory limits in the worker."""
     if resource is None:
         return
-    if memory_limit_bytes >= MEMORY_LIMIT_INFINITY:
+    if memory_limit_bytes is None:
         return
 
     soft_hard = (memory_limit_bytes, memory_limit_bytes)
@@ -128,24 +127,20 @@ def apply_persistent_command(
     perms: Permissions,
 ) -> tuple[WorkerResponse, bool]:
     """Apply one persistent-worker command and return response plus continue flag."""
-    operation = command.get("op")
-    if not isinstance(operation, str) or operation not in PERSISTENT_OPS:
-        return build_worker_error_response(_UNKNOWN_OPERATION_MESSAGE), True
+    operation = command["op"]
 
     if operation == PERSISTENT_OP_CLOSE:
         return build_worker_success_response(result=None, user_vars=local_user_vars), False
 
     if operation == PERSISTENT_OP_RESET:
-        requested_vars = command.get("user_vars")
-        if not isinstance(requested_vars, dict):
-            requested_vars = {}
+        requested_vars = command["user_vars"]
         local_user_vars.clear()
         local_user_vars.update(requested_vars)
         return build_worker_success_response(result=None, user_vars=local_user_vars), True
 
     if operation == PERSISTENT_OP_EXEC:
-        code = command.get("code")
-        if not isinstance(code, str):
+        code = command["code"]
+        if code is None:
             return build_worker_error_response("Missing or invalid code payload."), True
         return execute_worker_code(code, local_user_vars=local_user_vars, perms=perms), True
 

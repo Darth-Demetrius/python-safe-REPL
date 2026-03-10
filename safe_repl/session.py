@@ -2,18 +2,11 @@
 
 import argparse
 import sys
+from collections.abc import Callable
 
-from .execution import (
-    ExecutionMode,
-    ExecutionModeInput,
-    ExecutionModeOverride,
-    PersistentSubprocessSession,
-    coerce_execution_mode,
-    dispatch_execution,
-    reset_execution_state,
-)
 from .imports import parse_import_spec
 from .policy import PermissionLevel, Permissions
+from .process_isolation import WorkerSession
 from .repl_command_registry import (
     CommandRegistry,
 )
@@ -51,16 +44,14 @@ class SafeSession:
         perms: Permissions,
         user_vars: dict[str, object] | None = None,
         *,
-        execution_mode: ExecutionModeInput = ExecutionMode.PROCESS,
         repl_commands: CommandRegistry | None = None,
         command_char: str = ":",
     ):
-        """Create a session with persistent variables and execution mode."""
+        """Create a session with persistent variables and worker-backed execution."""
         self.perms = perms
         self.user_vars: dict[str, object] = user_vars or {}
-        self.execution_mode = coerce_execution_mode(execution_mode)
         self.command_char = command_char
-        self._persistent_process_session: PersistentSubprocessSession | None = None
+        self._worker_session: WorkerSession | None = None
         self.command_registry = repl_commands or CommandRegistry()
 
         self._cache_startup_summaries()
@@ -110,7 +101,7 @@ class SafeSession:
         print("Type 'quit' or 'exit' to exit.")
         self.command_registry.show_help(cmd_char=self.command_char)
 
-    def _run_repl_loop(self, *, mode: ExecutionMode) -> None:
+    def _run_repl_loop(self, *, execute: Callable[[str], object | None]) -> None:
         """Run interactive input/execute loop until user exits."""
         while True:
             try:
@@ -129,7 +120,7 @@ class SafeSession:
                     continue
 
             try:
-                result = self.exec(line, execution_mode=mode)
+                result = execute(line)
                 if result is not None:
                     print(result)
             except Exception as error:
@@ -155,103 +146,74 @@ class SafeSession:
         return cls(
             perms=perms,
             user_vars=user_vars,
-            execution_mode=coerce_execution_mode(
-                getattr(args, "execution_mode", ExecutionMode.default())
-            ),
         )
 
     def exec(
         self,
         code: str,
-        *,
-        execution_mode: ExecutionModeOverride = None,
     ) -> object | None:
-        """Execute one snippet and return expression result when applicable.
-
-        Args:
-            code: Python snippet to validate and execute.
-            execution_mode: Optional one-off backend override. When omitted,
-                uses this session's configured execution mode.
-        """
-        mode = coerce_execution_mode(execution_mode, fallback=self.execution_mode)
-        return dispatch_execution(
-            mode=mode,
-            code=code,
-            user_vars=self.user_vars,
-            perms=self.perms,
-            persistent_session=self._persistent_process_session,
-        )
+        """Execute one snippet through the session's worker."""
+        self.open_worker_session()
+        if self._worker_session is None:
+            raise RuntimeError("Worker session is unavailable for execution.")
+        return self._worker_session.exec(code)
 
     def reset(self) -> None:
-        """Reset local variables and persistent worker state if open."""
-        reset_execution_state(
-            self.user_vars,
-            persistent_session=self._persistent_process_session,
-        )
+        """Reset local variables and worker state if open."""
+        self.user_vars.clear()
+        if self._worker_session is not None:
+            self._worker_session.reset()
 
-    def open_subprocess_session(self) -> None:
-        """Start subprocess worker for repeated process-mode execution."""
-        if self._persistent_process_session is None:
-            self._persistent_process_session = PersistentSubprocessSession(
+    def open_worker_session(self) -> None:
+        """Start worker session for repeated execution."""
+        if self._worker_session is None:
+            self._worker_session = WorkerSession(
                 perms=self.perms,
                 user_vars=self.user_vars,
             )
-        self._persistent_process_session.open()
+        self._worker_session.open()
 
-    def close_subprocess_session(self) -> None:
-        """Stop subprocess worker if active."""
-        session = self._persistent_process_session
-        self._persistent_process_session = None
+    def close_worker_session(self) -> None:
+        """Stop worker session if active."""
+        session = self._worker_session
+        self._worker_session = None
         if session is not None:
             session.close()
-
-    def reopen_subprocess_session(self) -> None:
-        """Restart subprocess worker with current local variables."""
-        self.close_subprocess_session()
-        self.open_subprocess_session()
 
     def repl(
         self,
         *,
-        execution_mode: ExecutionModeOverride = None,
         command_char: str | None = None,
     ) -> None:
         """Run interactive single-line REPL loop.
 
         Args:
-            execution_mode: Optional backend override for this REPL run only.
-                When omitted, uses this session's configured execution mode.
             command_char: Optional prefix used to identify REPL commands.
                 When omitted, reuses the session's current command prefix.
 
-        Uses a persistent subprocess worker for `ExecutionMode.PROCESS` and
-        closes it when the loop exits.
+        Uses one worker session for the REPL run and closes it on exit.
         """
-        mode = coerce_execution_mode(execution_mode, fallback=self.execution_mode)
         if command_char is not None:
             self.command_char = command_char
 
-        use_persistent_process = mode is ExecutionMode.PROCESS
-        if use_persistent_process:
-            self.open_subprocess_session()
+        self.open_worker_session()
+        if self._worker_session is None:
+            raise RuntimeError("Worker session is unavailable for REPL execution.")
 
         self._print_repl_intro()
 
         try:
-            self._run_repl_loop(mode=mode)
+            self._run_repl_loop(execute=self._worker_session.exec)
         finally:
-            if use_persistent_process:
-                self.close_subprocess_session()
+            self.close_worker_session()
 
 
 def repl(
     *,
     perms: Permissions,
-    execution_mode: ExecutionModeOverride = None,
     command_char: str = ":",
 ) -> None:
     """Convenience function to launch a REPL for one permissions object."""
     SafeSession(perms).repl(
-        execution_mode=execution_mode,
         command_char=command_char,
     )
