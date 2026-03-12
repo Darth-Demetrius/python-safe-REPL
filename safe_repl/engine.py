@@ -25,26 +25,9 @@ def collect_allowed_names(
     allowed_names = set(user_vars.keys())
     allowed_names.update(name for name in global_scope if name != "__builtins__")
     for name, value in global_scope.items():
-        if name == "__builtins__":
-            continue
         if isinstance(value, dict):
             allowed_names.update(value)
     return allowed_names
-
-
-def _configure_memory_tracking(memory_limit: int | None) -> bool:
-    """Enable memory peak tracking when a finite limit is configured."""
-    memory_limit_active = memory_limit is not None
-    if not memory_limit_active:
-        return False
-
-    if not tracemalloc.is_tracing():
-        tracemalloc.start()
-        trace_started = True
-    else:
-        trace_started = False
-    tracemalloc.reset_peak()
-    return trace_started
 
 
 def _start_timeout(timeout_seconds: float | None) -> tuple[SignalHandler, TimerState | None]:
@@ -75,10 +58,20 @@ def safe_exec(
     """
     global_scope = perms.globals_dict
     memory_limit = perms.memory_limit_bytes
-    trace_started = _configure_memory_tracking(memory_limit)
     memory_limit_active = memory_limit is not None
     allowed_names = collect_allowed_names(user_vars, global_scope)
     previous_handler, previous_timer = _start_timeout(perms.timeout_seconds)
+
+    # Start tracemalloc only if we need memory tracking and it isn't already
+    # running (e.g. started externally by a test or embedding application).
+    # In the worker process RLIMIT_AS provides a hard OS-level cap; tracemalloc
+    # provides a complementary Python-level peak check for direct safe_exec use.
+    _started_tracemalloc = False
+    if memory_limit_active:
+        if not tracemalloc.is_tracing():
+            tracemalloc.start()
+            _started_tracemalloc = True
+        tracemalloc.reset_peak()
 
     try:
         tree = ast.parse(code, mode="exec")
@@ -102,5 +95,5 @@ def safe_exec(
             signal.setitimer(signal.ITIMER_REAL, *previous_timer)
         if previous_handler is not None:
             signal.signal(signal.SIGALRM, previous_handler)
-        if trace_started:
+        if _started_tracemalloc:
             tracemalloc.stop()

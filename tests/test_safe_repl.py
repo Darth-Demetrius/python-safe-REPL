@@ -7,7 +7,7 @@ import pytest
 from safe_repl.imports import (
     SafeReplCliArgError,
     SafeReplImportError,
-    parse_import_spec,
+    normalize_validate_import,
     validate_cli_args,
 )
 from safe_repl.repl_command_registry import CommandRegistry
@@ -22,21 +22,28 @@ from safe_repl import (
 )
 
 
-def activate(level: PermissionLevel, imports: dict[str, object] | None = None) -> Permissions:
+def activate(level: PermissionLevel, imports: list[str] | None = None) -> Permissions:
     perms = Permissions(
         base_perms=level,
         allow_symbols=set(),
         block_symbols=set(),
         allow_nodes=set(),
         block_nodes=set(),
-        imports=imports or {},
+        imports=imports or [],
     )
     return perms
 
 
 def run_limited(code: str, variables: dict[str, object]) -> object | None:
-    perms = activate(PermissionLevel.LIMITED, {"math": math})
-    return safe_exec(code, variables, perms=perms)
+    perms = activate(PermissionLevel.LIMITED, ["math:*"])
+    session = SafeSession(perms=perms, user_vars=variables)
+    try:
+        return session.exec(code)
+    finally:
+        if session.user_vars is not variables:
+            variables.clear()
+            variables.update(session.user_vars)
+        session.close_worker_session()
 
 
 @pytest.mark.parametrize(
@@ -47,8 +54,9 @@ def run_limited(code: str, variables: dict[str, object]) -> object | None:
         ("abs(-3)", 3),
         ("max(1, 5, 2)", 5),
         ("round(3.14159, 2)", 3.14),
-        ("math.sqrt(16)", 4.0),
-        ("math.floor(3.7)", 3),
+        # star import (math:*) expands all public names as direct calls
+        ("sqrt(16)", 4.0),
+        ("floor(3.7)", 3),
     ],
 )
 def test_limited_allows_core_operations(code: str, expected: object) -> None:
@@ -64,7 +72,7 @@ def test_assignment_persists_between_calls() -> None:
 
 
 def test_safe_session_exec_persists_state() -> None:
-    perms = activate(PermissionLevel.LIMITED, {"math": math})
+    perms = activate(PermissionLevel.LIMITED)
     session = SafeSession(perms)
 
     assert session.exec("x = 10") is None
@@ -73,7 +81,7 @@ def test_safe_session_exec_persists_state() -> None:
 
 
 def test_safe_session_reset_clears_user_vars() -> None:
-    perms = activate(PermissionLevel.LIMITED, {"math": math})
+    perms = activate(PermissionLevel.LIMITED)
     session = SafeSession(perms)
 
     session.exec("x = 10")
@@ -89,8 +97,8 @@ def test_safe_session_constructor_defaults() -> None:
 
 
 def test_safe_session_constructor_with_imports() -> None:
-    session = SafeSession(Permissions(base_perms=PermissionLevel.LIMITED, imports={"math": math}))
-    assert session.exec("math.sqrt(9)") == 3.0
+    session = SafeSession(Permissions(base_perms=PermissionLevel.LIMITED, imports=["math:sqrt"]))
+    assert session.exec("sqrt(9)") == 3.0
 
 
 def test_safe_session_from_cli_args_uses_default_math_imports() -> None:
@@ -111,7 +119,7 @@ def test_safe_session_from_cli_args_uses_default_math_imports() -> None:
 def test_safe_session_from_cli_args_with_explicit_import() -> None:
     args = argparse.Namespace(
         level="LIMITED",
-        imports=["json as j"],
+        imports=["json:dumps as dumps"],
         allow_functions=None,
         block_functions=None,
         allow_nodes=None,
@@ -120,7 +128,7 @@ def test_safe_session_from_cli_args_with_explicit_import() -> None:
         list_nodes=False,
     )
     session = SafeSession.from_cli_args(args)
-    assert session.exec("j.dumps({'x': 1})") == '{"x": 1}'
+    assert session.exec("dumps({'x': 1})") == '{"x": 1}'
 
 
 def test_safe_session_from_cli_args_empty_import_disables_default_math() -> None:
@@ -151,6 +159,14 @@ def test_limited_blocks_unsafe_calls_and_attributes(code: str, error: str) -> No
     variables: dict[str, object] = {}
     with pytest.raises(ValueError, match=error):
         run_limited(code, variables)
+
+
+def test_star_import_does_not_put_module_in_scope() -> None:
+    # math:* expands public names directly; the module object itself is not
+    # injected, so math.sqrt-style attribute access must be blocked.
+    variables: dict[str, object] = {}
+    with pytest.raises(ValueError, match="Attribute access not allowed"):
+        run_limited("math.sqrt(16)", variables)
 
 
 def test_limited_allows_unpacking_targets() -> None:
@@ -197,25 +213,22 @@ def test_minimum_blocks_unpacking_but_allows_simple_assignment() -> None:
 def test_limited_enforces_timeout() -> None:
     variables: dict[str, object] = {}
     perms = activate(PermissionLevel.LIMITED)
-    original_timeout = perms.timeout_seconds
-    try:
-        perms.set_timeout_seconds(0.01)
-        with pytest.raises(TimeoutError, match="Execution timed out"):
-            safe_exec("while True:\n    pass", variables, perms=perms)
-    finally:
-        perms.set_timeout_seconds(original_timeout)
+    perms.set_limits(timeout_seconds=0.01)
+    assert perms.timeout_seconds == 1
+    with pytest.raises(TimeoutError, match="Execution timed out"):
+        safe_exec("while True:\n    pass", variables, perms=perms)
 
 
 def test_limited_enforces_memory_limit() -> None:
-    variables: dict[str, object] = {}
     perms = activate(PermissionLevel.LIMITED)
-    original_limit = perms.memory_limit_bytes
+    perms.set_limits(memory_limit_bytes=64 * 1024)
+    assert perms.memory_limit_bytes == 64 * 1024
+    session = SafeSession(perms)
     try:
-        perms.set_memory_limit_bytes(64 * 1024)
         with pytest.raises((MemoryError, RuntimeError)):
-            safe_exec("x = list(range(200000))", variables, perms=perms)
+            session.exec("x = list(range(200000))")
     finally:
-        perms.set_memory_limit_bytes(original_limit)
+        session.close_worker_session()
 
 
 def test_limited_allows_attributes_on_literals() -> None:
@@ -316,13 +329,13 @@ def test_permission_level_invalid_value_warns_and_defaults_to_minimum() -> None:
 
 
 def test_parse_import_spec_raises_safe_repl_import_error() -> None:
-    with pytest.raises(SafeReplImportError, match="Failed to import"):
-        parse_import_spec("definitely_not_a_real_module_xyz")
+    with pytest.raises(SafeReplImportError, match="Cannot import module"):
+        normalize_validate_import("definitely_not_a_real_module_xyz")
 
 
 def test_parse_import_spec_reports_missing_symbol() -> None:
-    with pytest.raises(SafeReplImportError, match="has no attribute"):
-        parse_import_spec("math:definitely_not_a_real_symbol_xyz")
+    with pytest.raises(SafeReplImportError, match="Cannot import attribute"):
+        normalize_validate_import("math:definitely_not_a_real_symbol_xyz")
 
 
 @pytest.mark.parametrize(
@@ -335,7 +348,7 @@ def test_parse_import_spec_reports_missing_symbol() -> None:
 )
 def test_parse_import_spec_rejects_invalid_symbol_specs(spec: str) -> None:
     with pytest.raises(SafeReplImportError, match="Invalid import symbol spec"):
-        parse_import_spec(spec)
+        normalize_validate_import(spec)
 
 
 def test_validate_cli_args_raises_safe_repl_cli_arg_error_for_unknown_node() -> None:
@@ -506,7 +519,7 @@ def test_show_help_falls_back_when_help_template_is_invalid(
 def test_builtin_inspection_commands_print_session_details(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    session = SafeSession(activate(PermissionLevel.LIMITED, imports={"math": math}))
+    session = SafeSession(activate(PermissionLevel.LIMITED, imports=["math:*"]))
 
     assert session.command_registry.dispatch("level", session=session) is True
     assert session.command_registry.dispatch("functions", session=session) is True

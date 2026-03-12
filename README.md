@@ -65,7 +65,7 @@ print(result)  # 14
 
 - `MINIMUM`: attribute access is blocked.
 - `LIMITED`: attribute access is allowed on literals and imported symbols
-    (for example `'Hello, World!'.split()` or `math.sqrt(9)`).
+    (for example `'Hello, World!'.split()` or `root(9)` after `math:sqrt as root`).
 - `PERMISSIVE`: same as `LIMITED`, plus attributes on in-scope local/user names.
 - `UNSUPERVISED`: broad attribute access is allowed, except private/dunder attributes
     are still blocked by validator rules.
@@ -77,10 +77,9 @@ print(result)  # 14
   - Parses, validates, and executes one snippet under explicit permissions.
 - `validate_ast(tree: ast.AST, user_vars: dict[str, object], allowed_names: set[str], perms: Permissions) -> None`
   - Validates one parsed AST against active security rules.
-- `Permissions.set_timeout_seconds(seconds: float) -> None`
-  - Instance method that overrides timeout for this `Permissions` object.
-- `Permissions.set_memory_limit_bytes(bytes_limit: int) -> None`
-  - Instance method that overrides memory limit for this `Permissions` object.
+- `Permissions.set_limits(timeout_seconds: float | None = None, memory_limit_bytes: int | None = None) -> None`
+  - Instance method that overrides timeout and/or memory limit for this `Permissions` object.
+  - Values are clamped to safe minimums (`timeout_seconds >= 1`, `memory_limit_bytes >= 1024`).
 - `repl(*, perms: Permissions) -> None`
   - Starts the interactive REPL loop (internally uses `SafeSession`).
 - `main() -> None`
@@ -112,7 +111,7 @@ print(result)  # 14
 - `safe_repl.process_isolation`
   - Worker runtime APIs and process isolation orchestration.
 - `safe_repl.process_control`
-  - Process lifecycle, start-method validation, timeout enforcement, and worker finalization helpers.
+  - Process lifecycle, context-process construction checks, timeout enforcement, and worker finalization helpers.
 - `safe_repl.process_worker`
   - Worker-side execution, command handling, and response normalization.
 - `safe_repl.process_protocol`
@@ -131,12 +130,17 @@ print(result)  # 14
 Example:
 
 ```python
-import math
-
 from safe_repl import PermissionLevel, Permissions, SafeSession
 
-session = SafeSession(Permissions(base_perms=PermissionLevel.LIMITED, imports={"math": math}))
-print(session.exec("math.sqrt(16)"))  # 4.0
+# "math:*" expands all public math names for direct access only:
+# sqrt(16) works; math.sqrt(16) does NOT (module not put in scope)
+session = SafeSession(Permissions(base_perms=PermissionLevel.LIMITED, imports=["math:*"]))
+print(session.exec("sqrt(16)"))    # 4.0
+print(session.exec("floor(3.7)"))  # 3
+
+# Import specific names with optional alias:
+session2 = SafeSession(Permissions(base_perms=PermissionLevel.LIMITED, imports=["math:sqrt as root"]))
+print(session2.exec("root(9)"))  # 3.0
 ```
 
 ### Manual worker session lifecycle
@@ -327,11 +331,12 @@ Notes:
 ### CLI import flag behavior
 
 - `--import SPEC`
-  - Supports `module`, `module as alias`, `module:name`, and `module:*`.
+  - Supports `module`, `module as alias`, `module:name`, `module:name as alias`, and `module:*`.
   - If `--import` is not used, CLI defaults to importing `math:*`.
   - Any use of `--import` disables default `math:*` auto-import.
   - `--import ""` disables auto-import without adding any imports.
-
+  - `module:*` expands all public names at startup — each name is accessible directly (for example `sqrt(16)`). The module object itself is **not** put in scope, so `math.sqrt(16)` does not work with `math:*`; use `math:sqrt` for that.
+  - Import specs are validated at policy construction time; the worker resolves them locally at launch.
 ## Testing matrix
 
 Current automated test coverage includes:
@@ -350,7 +355,7 @@ Current automated test coverage includes:
   - End-to-end `python -m safe_repl` subprocess behavior
   - CLI success paths and non-zero exit error paths
 - `tests/test_process_control.py`
-  - Process lifecycle validation and timeout/finalization behavior
+  - Process lifecycle, context-process guardrails, and timeout/finalization behavior
 - `tests/test_process_protocol.py`
   - Worker command payload coercion and normalization rules
 - `tests/test_security_api.py`
@@ -359,28 +364,12 @@ Current automated test coverage includes:
 ## TODO
 
 - Manually review code.
-  - [x] `__init__.py`
-  - [x] `__main__.py`
-  - [x] `cli.py`
-  - [ ] `engine.py`
-  - [x] `imports.py`
-  - [x] `policy_tables.py`
-  - [x] `policy.py`
-  - [ ] `process_control.py`
-  - [ ] `process_isolation.py`
-  - [ ] `process_protocol.py`
-  - [ ] `process_worker.py`
-  - [x] `repl_command_registry.py`
-  - [ ] `sandbox.py`
   - [ ] `session.py`
-  - [x] `validator.py`
-- Add ability to create sessions with custom command registries for extensible REPL commands.
 - Add ability to create custom REPL commands during runtime via session API.
 - Use `colorama` or similar for colored CLI output.
 - Graceful handling of lumped I/O à la discord messaging. (don't send a bajillion individual messages in response to a single message)
 - Graceful shutdown handling for subprocess workers (for example on `KeyboardInterrupt`).
 - Replace denylist-heavy `UNSUPERVISED` policy behavior with a capability/profile-based model.
-- Improve timeout portability across environments (keep current behavior but add non-`SIGALRM` fallback strategy).
 
 ## Sandbox upgrade paths
 

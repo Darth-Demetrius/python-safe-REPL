@@ -2,14 +2,30 @@
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-03-11
+
 ### Added
 
+- Star imports (`module:*`) now expand all public module names so they are accessible directly (`sqrt(16)`). The module object itself is not put in scope, avoiding `name.name`-style conflicts for modules whose attribute name matches the module name.
 - Added `tools/bench_security.py` to benchmark security-surface import-time and runtime paths (`Permissions` construction and `validate_ast`).
+
+### Fixed
+
+- `safe_exec` memory limit was always silently ignored when called directly (not via a worker): `tracemalloc` was never started, so `get_traced_memory()` always returned `(0, 0)`. `safe_exec` now starts and stops `tracemalloc` itself when `memory_limit_bytes` is active and tracing is not already running. The worker's `RLIMIT_AS` OS cap is unchanged and remains the hard limit in worker-backed sessions.
 
 ### Changed
 
 - Optimized validation/runtime hot paths across security modules by removing duplicate attribute-handler work in AST validation and reducing repeated lookup overhead in validation and allowed-name collection.
 - Added Linux-focused process memory limit enforcement in process isolation by applying child `RLIMIT_AS` via `with_limits(...)` and attempting best-effort cgroup v2 PID attachment through the new `safe_repl.sandbox` helpers.
+- Updated process worker response helper naming for clearer semantics (`apply_worker_response_to_user_vars`).
+
+### Tests
+
+- Aligned process-control and session tests with current APIs: context-process validation checks, worker-safe import usage in process-backed sessions, and `Permissions.set_limits(...)` limit overrides.
+
+### Documentation
+
+- Updated README API reference and examples to use `Permissions.set_limits(...)`, clarified current `process_control` responsibilities, and documented process-serializable import requirements for worker-backed execution.
 
 ## [0.4.1] - 2026-03-09
 
@@ -107,7 +123,8 @@
 - Added unit and integration CLI tests for error handling and flag behavior.
 - Expanded README with API surface, exception handling, execution-mode defaults, internal module split notes, and persistent subprocess lifecycle examples.
 
-[Unreleased]: https://github.com/Darth-Demetrius/python-sub-REPL/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/Darth-Demetrius/python-sub-REPL/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.4.2
 [0.4.1]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.4.1
 [0.4.0]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.4.0
 [0.3.1]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.3.1

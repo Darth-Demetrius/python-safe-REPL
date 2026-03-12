@@ -1,39 +1,11 @@
 """Stateful session and interactive REPL orchestration."""
 
 import argparse
-import sys
 from collections.abc import Callable
 
-from .imports import parse_import_spec
 from .policy import PermissionLevel, Permissions
 from .process_isolation import WorkerSession
-from .repl_command_registry import (
-    CommandRegistry,
-)
-
-
-def _resolve_cli_imports(import_args: list[str] | None) -> dict[str, object]:
-    """Resolve CLI import specs into the globals injection map.
-
-    Behavior matches the CLI `--import` flag contract:
-    - when `--import` is not used, auto-import `math:*`
-    - any use of `--import` disables auto-import of `math`
-    - empty/whitespace specs are ignored, so `--import ""` results in no imports
-    """
-    if import_args is None:
-        return parse_import_spec("math:*")
-
-    import_specs = [spec for spec in (import_args or []) if spec.strip()]
-    if import_specs:
-        print(
-            "Warning: Imported libraries bypass AST validation and have full access.",
-            file=sys.stderr,
-        )
-        imports: dict[str, object] = {}
-        for spec in import_specs:
-            imports.update(parse_import_spec(spec))
-        return imports
-    return {}
+from .repl_command_registry import CommandRegistry
 
 
 class SafeSession:
@@ -65,7 +37,7 @@ class SafeSession:
         )
         self._startup_builtins = ", ".join(builtins_names)
         self._startup_nodes = ", ".join(sorted(node.__name__ for node in self.perms.allowed_nodes))
-        self._startup_imports = ", ".join(sorted(self.perms.imported_symbols))
+        self._startup_imports = self.perms.imports
 
     def print_builtins(self) -> None:
         """Print builtins summary for the current session permissions."""
@@ -134,10 +106,9 @@ class SafeSession:
         user_vars: dict[str, object] | None = None,
     ) -> "SafeSession":
         """Build a session from parsed CLI arguments and normalized mode."""
-        imports = _resolve_cli_imports(args.imports)
         perms = Permissions(
             base_perms=PermissionLevel(args.level),
-            imports=imports,
+            imports=args.imports if args.imports is not None else ["math:*"],
             allow_symbols=set(args.allow_functions) if args.allow_functions else None,
             block_symbols=set(args.block_functions) if args.block_functions else None,
             allow_nodes=set(args.allow_nodes) if args.allow_nodes else None,

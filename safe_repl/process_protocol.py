@@ -19,7 +19,6 @@ PersistentOp = Literal["exec", "reset", "close"]
 
 class WorkerSuccessResponse(TypedDict):
     """Serialized successful worker response payload."""
-
     ok: bool
     result: object | None
     user_vars: dict[str, object]
@@ -27,7 +26,6 @@ class WorkerSuccessResponse(TypedDict):
 
 class WorkerErrorResponse(TypedDict):
     """Serialized worker exception metadata payload."""
-
     ok: bool
     exception_type: str
     message: str
@@ -35,7 +33,6 @@ class WorkerErrorResponse(TypedDict):
 
 class WorkerCommand(TypedDict):
     """Persistent worker command payload."""
-
     op: PersistentOp
     code: str | None
     user_vars: dict[str, object]

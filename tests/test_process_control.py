@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import multiprocessing
+
 import pytest
 
 from safe_repl import process_control
@@ -37,16 +39,47 @@ class _FakeConnection:
         return self.recv_value
 
 
-def test_validate_process_isolation_support_rejects_non_default_start_method() -> None:
-    with pytest.raises(RuntimeError, match="Unsupported process start method"):
-        process_control.validate_process_isolation_support("spawn")
+def _noop_worker() -> None:
+    return None
 
 
-def test_validate_process_isolation_support_rejects_unsupported_platform(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(process_control.multiprocessing, "get_all_start_methods", lambda: ["spawn"])
+def test_spawn_context_process_returns_process_instance() -> None:
+    ctx = multiprocessing.get_context("spawn")
 
-    with pytest.raises(RuntimeError, match="not supported"):
-        process_control.validate_process_isolation_support(process_control.DEFAULT_START_METHOD)
+    process = process_control.spawn_context_process(
+        context=ctx,
+        target=_noop_worker,
+        kwargs={},
+        daemon=True,
+    )
+
+    assert process.daemon is True
+
+
+def test_spawn_context_process_rejects_missing_process_factory() -> None:
+    context = object()
+
+    with pytest.raises(RuntimeError, match="does not provide a Process factory"):
+        process_control.spawn_context_process(
+            context=context,
+            target=_noop_worker,
+            kwargs={},
+            daemon=False,
+        )
+
+
+def test_spawn_context_process_rejects_unsupported_process_type() -> None:
+    class _InvalidContext:
+        def Process(self, **_kwargs: object) -> object:  # noqa: N802
+            return object()
+
+    with pytest.raises(RuntimeError, match="unsupported process type"):
+        process_control.spawn_context_process(
+            context=_InvalidContext(),
+            target=_noop_worker,
+            kwargs={},
+            daemon=False,
+        )
 
 
 def test_finalize_process_terminates_when_requested() -> None:

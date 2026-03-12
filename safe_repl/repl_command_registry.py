@@ -207,7 +207,7 @@ class CommandRegistry:
             help_text="Prints imported symbols for the current session.",
         )
         def _show_imports_command(_args: str, session: SafeSession) -> None:
-            if session.perms.imported_symbols:
+            if session.perms.imports:
                 session.print_imports()
             else:
                 print("  Imports: (none)")

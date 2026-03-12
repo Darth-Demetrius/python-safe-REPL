@@ -9,93 +9,46 @@ from typing import Callable
 
 from .policy import Permissions
 from .process_control import (
-    DEFAULT_START_METHOD,
     PROCESS_JOIN_TIMEOUT_SECONDS,
     await_worker_response,
     finalize_process,
     spawn_context_process,
-    validate_process_isolation_support,
 )
-from .sandbox import with_limits, attach_pid_to_cgroup
-from .process_protocol import PERSISTENT_OP_CLOSE, PERSISTENT_OP_EXEC, PERSISTENT_OP_RESET
+from .process_protocol import (
+    PERSISTENT_OP_CLOSE,
+    PERSISTENT_OP_EXEC,
+    PERSISTENT_OP_RESET,
+)
 from .process_worker import (
-    apply_success_response_to_user_vars,
-    run_isolated_worker,
+    apply_worker_response_to_user_vars,
     run_persistent_isolated_worker,
 )
 
+__all__ = [
+    "WorkerSession",
+]
 
 def _start_worker_process(
     *,
-    start_method: str,
     target: Callable[..., None],
     kwargs_builder: Callable[[Connection], dict[str, object]],
     duplex: bool,
-    memory_bytes: int | None = None,
 ) -> tuple[Connection, BaseProcess]:
     """Create and start a worker process with a connected IPC pipe."""
-    ctx = multiprocessing.get_context(start_method)
+    ctx = multiprocessing.get_context("spawn")
     parent_conn, child_conn = ctx.Pipe(duplex=duplex)
-    # Decorate the target to set RLIMIT_AS in the child (if requested).
-    if memory_bytes is not None:
-        wrapped_target = with_limits(memory_bytes)(target)
-    else:
-        wrapped_target = target
 
     process = spawn_context_process(
         context=ctx,
-        target=wrapped_target,
+        target=target,
         kwargs=kwargs_builder(child_conn),
         daemon=True,
     )
 
     process.start()
-    # best-effort attach to cgroup (may fail without privileges)
-    try:
-        pid = process.pid
-        if pid is not None:
-            attach_pid_to_cgroup(pid, memory_bytes)
-    except Exception:
-        pass
 
     child_conn.close()
     return parent_conn, process
-
-
-def safe_exec_process_isolated(
-    code: str,
-    user_vars: dict[str, object],
-    *,
-    perms: Permissions,
-    start_method: str = DEFAULT_START_METHOD,
-) -> object | None:
-    """Execute one snippet in a child process and sync state back to caller.
-
-    Notes:
-    - This mode currently targets POSIX `fork` start method.
-    - Return value and synchronized user vars must be pickle-serializable.
-    """
-    validate_process_isolation_support(start_method)
-
-    parent_conn, process = _start_worker_process(
-        start_method=start_method,
-        target=run_isolated_worker,
-        kwargs_builder=lambda child_conn: {
-            "conn": child_conn,
-            "code": code,
-            "user_vars": user_vars,
-            "perms": perms,
-        },
-        duplex=False,
-        memory_bytes=perms.memory_limit_bytes,
-    )
-
-    try:
-        response = await_worker_response(parent_conn, process, timeout=perms.timeout_seconds)
-    finally:
-        parent_conn.close()
-        finalize_process(process)
-    return apply_success_response_to_user_vars(response, user_vars)
 
 
 class WorkerSession:
@@ -106,13 +59,9 @@ class WorkerSession:
         *,
         perms: Permissions,
         user_vars: dict[str, object],
-        start_method: str = DEFAULT_START_METHOD,
     ):
-        validate_process_isolation_support(start_method)
-
         self._perms = perms
         self._user_vars = user_vars
-        self._start_method = start_method
         self._parent_conn: Connection | None = None
         self._process: BaseProcess | None = None
 
@@ -131,7 +80,6 @@ class WorkerSession:
             return
 
         parent_conn, process = _start_worker_process(
-            start_method=self._start_method,
             target=run_persistent_isolated_worker,
             kwargs_builder=lambda child_conn: {
                 "conn": child_conn,
@@ -139,7 +87,6 @@ class WorkerSession:
                 "perms": self._perms,
             },
             duplex=True,
-            memory_bytes=self._perms.memory_limit_bytes,
         )
 
         self._parent_conn = parent_conn
@@ -170,28 +117,17 @@ class WorkerSession:
                 parent_conn.close()
             finalize_process(process)
 
-    def reopen(self) -> None:
-        """Restart worker with current local user variable state."""
-        self.close()
-        self.open()
-
     def exec(self, code: str) -> object | None:
         """Execute one snippet through the worker."""
-        response = self._request(
-            {"op": PERSISTENT_OP_EXEC, "code": code},
-            timeout=self._perms.timeout_seconds,
-        )
-        return apply_success_response_to_user_vars(response, self._user_vars)
+        response = self._request({"op": PERSISTENT_OP_EXEC, "code": code})
+        return apply_worker_response_to_user_vars(response, self._user_vars)
 
     def reset(self) -> None:
         """Clear worker and local user variable state."""
-        response = self._request(
-            {"op": PERSISTENT_OP_RESET, "user_vars": {}},
-            timeout=self._perms.timeout_seconds,
-        )
-        apply_success_response_to_user_vars(response, self._user_vars)
+        response = self._request({"op": PERSISTENT_OP_RESET, "user_vars": {}})
+        apply_worker_response_to_user_vars(response, self._user_vars)
 
-    def _request(self, command: dict[str, object], *, timeout: float | None) -> object:
+    def _request(self, command: dict[str, object]) -> object:
         """Send command to worker and return response payload."""
         if not self.is_open:
             raise RuntimeError("Worker session is not open.")
@@ -201,15 +137,13 @@ class WorkerSession:
 
         try:
             self._parent_conn.send(command)
-            return await_worker_response(self._parent_conn, self._process, timeout=timeout)
+            return await_worker_response(
+                self._parent_conn,
+                self._process,
+                timeout=self._perms.timeout_seconds
+            )
         except TimeoutError:
             raise
         except Exception as exc:  # noqa: BLE001
             self.close()
             raise RuntimeError(f"Worker session failed: {exc}") from exc
-
-
-__all__ = [
-    "WorkerSession",
-    "safe_exec_process_isolated",
-]

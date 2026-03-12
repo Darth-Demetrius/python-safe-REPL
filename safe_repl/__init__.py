@@ -9,11 +9,10 @@ Public API is re-exported from focused internal modules:
 
 from .cli import main
 from .engine import safe_exec
-from .process_isolation import safe_exec_process_isolated
 from .imports import (
     SafeReplCliArgError,
     SafeReplImportError,
-    parse_import_spec as _parse_import_spec,
+    normalize_validate_import as _parse_import_spec,
     validate_cli_args as _validate_cli_args,
 )
 from .policy import PermissionLevel, Permissions
@@ -29,7 +28,6 @@ __all__ = (
     "SafeSession",
     "CommandRegistry",
     "safe_exec",
-    "safe_exec_process_isolated",
     "validate_ast",
     "repl",
     "main",

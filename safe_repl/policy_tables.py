@@ -173,11 +173,11 @@ DEFAULT_BLOCKED_SYMBOLS = (
     BLOCKED_SYMBOLS_UNSUPERVISED,
 )
 
-DEFAULT_TIMEOUT_SECONDS: tuple[float, ...] = (
-    0.1,
-    0.5,
+DEFAULT_TIMEOUT_SECONDS: tuple[float | None, ...] = (
+    0.2,
+    1.0,
     10.0,
-    float("inf"),
+    None,
 )
 
 DEFAULT_MEMORY_LIMIT_BYTES: tuple[int | None, ...] = (

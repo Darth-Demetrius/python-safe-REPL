@@ -7,6 +7,7 @@ This module defines behavior-oriented policy types (`PermissionLevel`,
 import ast
 import builtins
 from enum import IntEnum
+from typing import Optional
 import warnings
 
 from .policy_tables import (
@@ -16,6 +17,15 @@ from .policy_tables import (
     DEFAULT_BLOCKED_SYMBOLS,
     DEFAULT_MEMORY_LIMIT_BYTES,
     DEFAULT_TIMEOUT_SECONDS,
+)
+from .imports import (
+    NormalizedImportSpec,
+    normalize_validate_imports,
+)
+
+__all__ = (
+    "PermissionLevel",
+    "Permissions",
 )
 
 
@@ -81,52 +91,76 @@ class Permissions:
     - `block_symbols`: Built-in symbols to block beyond the baseline.
     - `allow_nodes`: Additional AST node types to allow beyond the baseline.
     - `block_nodes`: AST node types to block beyond the baseline.
-    - `imports`: Mapping of symbol names to objects to inject into the execution environment as imports.
-    - `timeout_seconds`: Optional execution timeout in seconds (float('inf') for no timeout).
-    - `memory_limit_bytes`: Optional memory limit in bytes (float('inf') for no limit).
+    - `imports`: Import spec strings to normalize/validate for worker-side resolution.
+    - `timeout_seconds`: Optional execution timeout in seconds (None for no timeout).
+    - `memory_limit_bytes`: Optional memory limit in bytes (None for no limit).
 
     Defaults:
     - `base_perms` defaults to `PermissionLevel.LIMITED`.
-    - All other args default to empty sets/dicts or `None` (which resolves to level defaults for time/memory).
+    - All other args default to level defaults.
     """
 
     def __init__(
         self,
         base_perms: PermissionLevel = PermissionLevel.LIMITED,
-        allow_symbols: set[str] | None = None,
-        block_symbols: set[str] | None = None,
-        allow_nodes: set[type[ast.AST]] | None = None,
-        block_nodes: set[type[ast.AST]] | None = None,
-        imports: dict[str, object] | None = None,
-        timeout_seconds: float | None = None,
-        memory_limit_bytes: int | None = None,
+        allow_symbols: Optional[ set[str] ] = None,
+        block_symbols: Optional[ set[str] ] = None,
+        allow_nodes: Optional[ set[type[ast.AST]] ] = None,
+        block_nodes: Optional[ set[type[ast.AST]] ] = None,
+        imports: Optional[ list[str] ] = None,
+        timeout_seconds: Optional[ float ] = ..., #  type: ignore[assignment]
+        memory_limit_bytes: Optional[ int ] = ..., #  type: ignore[assignment]
     ):
         """Build a policy from level defaults plus optional overrides."""
         allow_symbols = allow_symbols or set()
         block_symbols = block_symbols or set()
         allow_nodes = allow_nodes or set()
         block_nodes = block_nodes or set()
-        imports = imports or {}
+        self.imports = normalize_validate_imports(imports or [])
+
+        # Extract imported symbol names and add to allowed symbols
+        self.imported_symbols: set[str] = set()
+        for spec in self.imports:
+            names = spec.get("names", [])
+            module_name, module_alias = spec.get("module", ("", ""))
+
+            if not names:
+                # Module import without explicit names - add module alias
+                if module_alias and isinstance(module_alias, str):
+                    self.imported_symbols.add(module_alias)
+            elif names[0][0] == "*":
+                # Star import - add only the expanded public names directly.
+                # The module alias is intentionally NOT added: `module:*` makes
+                # symbols directly accessible (e.g. `sqrt(16)`) but does not
+                # put the module object itself in scope, avoiding `name.name`
+                # style conflicts for modules whose attribute matches their name.
+                for import_name, import_alias in names[1:]:
+                    self.imported_symbols.add(import_alias)
+            else:
+                # Explicit imports - add the aliases
+                for import_name, import_alias in names:
+                    self.imported_symbols.add(import_alias)
+        allow_symbols |= self.imported_symbols
 
         self.level = base_perms
         self.modified = bool(allow_symbols or block_symbols or allow_nodes or block_nodes)
-        self.set_timeout_seconds(
-            DEFAULT_TIMEOUT_SECONDS[self.level] if timeout_seconds is None else timeout_seconds
-        )  # Use setter to ensure proper semantics
+        self.timeout_seconds = (
+            DEFAULT_TIMEOUT_SECONDS[self.level]
+             if timeout_seconds is ...
+             else timeout_seconds
+        )
         self.memory_limit_bytes = (
             DEFAULT_MEMORY_LIMIT_BYTES[self.level]
-            if memory_limit_bytes is None
+            if memory_limit_bytes is ...
             else memory_limit_bytes
         )
 
-        blocked_symbols = DEFAULT_BLOCKED_SYMBOLS[self.level] | block_symbols
+        self.blocked_symbols = DEFAULT_BLOCKED_SYMBOLS[self.level] | block_symbols
         self.allowed_symbols = (
             DEFAULT_ALLOWED_SYMBOLS[self.level] | allow_symbols
-        ) - blocked_symbols
+        ) - self.blocked_symbols
         if self.level >= PermissionLevel.PERMISSIVE:
             self.allowed_symbols.add("__build_class__")
-        self.imported_symbols = set(imports) - blocked_symbols
-        self.allowed_symbols |= self.imported_symbols
 
         builtins_map = builtins.__dict__
         self.globals_dict: dict[str, object] = {"__name__": "__safe_repl__"}
@@ -135,9 +169,6 @@ class Permissions:
             for name in self.allowed_symbols
             if name in builtins_map
         }
-        self.globals_dict.update(
-            {name: obj for name, obj in imports.items() if name not in blocked_symbols}
-        )
 
         self.allowed_nodes = (
             (DEFAULT_ALLOWED_NODES[self.level] | allow_nodes)
@@ -148,25 +179,18 @@ class Permissions:
     def __str__(self) -> str:
         """Return a compact human-readable summary of active policy."""
         name = self.level.name.lower() + (" (custom)" if self.modified else "")
-        if not self.imported_symbols:
-            return name
-        if len(self.imported_symbols) <= 3:
-            return f"{name} with imports: {', '.join(sorted(self.imported_symbols))}"
-        return f"{name} with {len(self.imported_symbols)} imports"
+        if self.imports:
+            return f"{name} with {len(self.imports)} imports"
+        return name
 
-    def set_timeout_seconds(self, seconds: float | None) -> None:
-        """Set this instance's execution timeout in seconds (None for no timeout)."""
-        # Convert timeout to `Connection.poll` timeout semantics.
-        if seconds is None or seconds == float("inf"):
-            self.timeout_seconds = None
-            return
-        self.timeout_seconds = max(seconds, 0.0)
 
-    def set_memory_limit_bytes(self, bytes_limit: int) -> None:
-        """Override this instance's memory limit in bytes."""
-        self.memory_limit_bytes = bytes_limit
-
-__all__ = (
-    "PermissionLevel",
-    "Permissions",
-)
+    def set_limits(self, timeout_seconds: Optional[float] = None, memory_limit_bytes: Optional[int] = None) -> None:
+        """
+        Set timeout and/or memory limit.
+        Minimum timeout is 1 second and minimum memory limit is 1024 bytes to avoid instability.
+        Cannot set limits to None during execution.
+        """
+        if timeout_seconds is not None:
+            self.timeout_seconds = max(timeout_seconds, 1)
+        if memory_limit_bytes is not None:
+            self.memory_limit_bytes = max(memory_limit_bytes, 1024)

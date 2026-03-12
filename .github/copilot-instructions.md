@@ -1,8 +1,9 @@
 # Copilot Workspace Instructions
 
 - Virtual environment:
-  - This workspace's virtual environment already exists, so do not create a new one.
-  - Use `python` to refer to the Python interpreter in the virtual environment.
+  - This workspace provides a Python virtual environment in .venv. Your editor automatically activates the workspace venv for terminals and tasks. Use the command `python` (not a hard-coded full path) for running scripts and tests while working in the activated workspace.
+  - If the command `python` does not work, try activating it with `source .venv/bin/activate`.
+  - Do not use full paths to the Python interpreter or any tools in the virtual environment.
   - Prefer workspace-local tools and dependencies from `.venv`.
 - Documentation and code style:
   - Follow the PEP 8 style guide for Python code.
@@ -13,7 +14,6 @@
   - Always keep the README and CHANGELOG up to date with any changes made to the codebase.
   - Do not change the changelog history.
   - Keep the changelog concise, if multiple changes are made to the same section, or with the same purpose, merge them into a single entry instead of adding multiple entries.
-  - Whenever a file is changed, update the TODO list in the README to uncheck any files that have been changed, so that they can be reviewed again. Do not update this at commit time, but rather at the end of the change.
 - Versioning: Major.Minor.Patch
   - Major version, 0 for development, incremented for breaking changes after stable release.
   - Minor version, incremented for non-breaking feature additions and significant changes.

@@ -1,11 +1,12 @@
 """Worker-side execution helpers for process-isolated runtime."""
 
 from __future__ import annotations
-
 import builtins
+import resource
 from multiprocessing.connection import Connection
 
 from .engine import safe_exec
+from .imports import NormalizedImportSpec
 from .policy import Permissions
 from .process_protocol import (
     PERSISTENT_OP_CLOSE,
@@ -18,20 +19,21 @@ from .process_protocol import (
     coerce_worker_command,
 )
 
-try:
-    import resource
-except ImportError:  # pragma: no cover - unavailable on some platforms
-    resource = None  # type: ignore[assignment]
 
-
-_UNKNOWN_OPERATION_MESSAGE = "Unknown persistent worker operation."
-
-
-def _build_error_response(*, exception_type: str, message: str) -> WorkerErrorResponse:
+def build_error_response(*,
+        exc: BaseException | str | None = None,
+        message: str = ""
+    ) -> WorkerErrorResponse:
     """Create an error payload with explicit exception metadata."""
+    if isinstance(exc, BaseException):
+        message = message or str(exc)
+        exc = type(exc).__name__
+    elif exc is None:
+        exc = "RuntimeError"
+
     return {
         "ok": False,
-        "exception_type": exception_type,
+        "exception_type": exc,
         "message": message,
     }
 
@@ -54,24 +56,6 @@ def raise_worker_exception(exception_type: str, message: str) -> None:
     raise RuntimeError(f"Worker raised {exception_type}: {message}")
 
 
-def apply_worker_memory_limit(memory_limit_bytes: int | None) -> None:
-    """Apply best-effort address-space/process memory limits in the worker."""
-    if resource is None:
-        return
-    if memory_limit_bytes is None:
-        return
-
-    soft_hard = (memory_limit_bytes, memory_limit_bytes)
-    for limit_name in ("RLIMIT_AS", "RLIMIT_DATA"):
-        if hasattr(resource, limit_name):
-            resource.setrlimit(getattr(resource, limit_name), soft_hard)
-
-
-def build_worker_error_response(message: str) -> WorkerErrorResponse:
-    """Create a runtime worker error payload for transport failures."""
-    return _build_error_response(exception_type="RuntimeError", message=message)
-
-
 def build_worker_success_response(
     *,
     result: object | None,
@@ -85,11 +69,6 @@ def build_worker_success_response(
     }
 
 
-def build_worker_exception_response(exc: BaseException) -> WorkerErrorResponse:
-    """Convert a raised exception into worker error payload format."""
-    return _build_error_response(exception_type=type(exc).__name__, message=str(exc))
-
-
 def execute_worker_code(
     code: str,
     *,
@@ -101,7 +80,7 @@ def execute_worker_code(
         result = safe_exec(code, local_user_vars, perms=perms)
         return build_worker_success_response(result=result, user_vars=local_user_vars)
     except BaseException as exc:  # noqa: BLE001
-        return build_worker_exception_response(exc)
+        return build_error_response(exc=exc)
 
 
 def send_worker_response(conn: Connection, response: WorkerResponse) -> bool:
@@ -110,8 +89,8 @@ def send_worker_response(conn: Connection, response: WorkerResponse) -> bool:
         conn.send(response)
         return True
     except Exception as send_exc:  # noqa: BLE001
-        transport_error = build_worker_error_response(
-            f"Failed to serialize isolated worker response: {send_exc}"
+        transport_error = build_error_response(
+            message=f"Failed to serialize isolated worker response: {send_exc}",
         )
         try:
             conn.send(transport_error)
@@ -120,7 +99,7 @@ def send_worker_response(conn: Connection, response: WorkerResponse) -> bool:
             return False
 
 
-def apply_persistent_command(
+def run_worker_command(
     command: WorkerCommand,
     *,
     local_user_vars: dict[str, object],
@@ -141,13 +120,13 @@ def apply_persistent_command(
     if operation == PERSISTENT_OP_EXEC:
         code = command["code"]
         if code is None:
-            return build_worker_error_response("Missing or invalid code payload."), True
+            return build_error_response(message="Missing or invalid code payload."), True
         return execute_worker_code(code, local_user_vars=local_user_vars, perms=perms), True
 
-    return build_worker_error_response(_UNKNOWN_OPERATION_MESSAGE), True
+    return build_error_response(message="Unknown operation."), True
 
 
-def apply_success_response_to_user_vars(
+def apply_worker_response_to_user_vars(
     response: object,
     user_vars: dict[str, object],
 ) -> object | None:
@@ -156,14 +135,14 @@ def apply_success_response_to_user_vars(
         raise RuntimeError("Invalid response from isolated worker.")
 
     ok_value = response.get("ok")
-    if ok_value is False:
+    if not isinstance(ok_value, bool):
+        raise RuntimeError("Invalid response status from isolated worker.")
+    if not ok_value:
         exception_type = response.get("exception_type")
         message = response.get("message")
         if not isinstance(exception_type, str) or not isinstance(message, str):
             raise RuntimeError("Invalid error payload from isolated worker.")
         raise_worker_exception(exception_type, message)
-    if ok_value is not True:
-        raise RuntimeError("Invalid response status from isolated worker.")
 
     synced_user_vars = response.get("user_vars")
     if not isinstance(synced_user_vars, dict):
@@ -174,36 +153,57 @@ def apply_success_response_to_user_vars(
     return response.get("result")
 
 
-def run_isolated_worker(
-    conn: Connection,
-    *,
-    code: str,
-    user_vars: dict[str, object],
-    perms: Permissions,
-) -> None:
-    """Execute one snippet in a child process and send a structured response."""
-    local_user_vars = dict(user_vars)
-    try:
-        apply_worker_memory_limit(perms.memory_limit_bytes)
-        response = execute_worker_code(code, local_user_vars=local_user_vars, perms=perms)
-    except BaseException as exc:  # noqa: BLE001
-        response = build_worker_exception_response(exc)
+def resolve_imports_for_worker(perms: Permissions) -> None:
+    """Resolve imports in worker and inject them into child execution builtins."""
+    builtins_scope = perms.globals_dict.get("__builtins__")
+    if not isinstance(builtins_scope, dict):
+        return
 
-    try:
-        send_worker_response(conn, response)
-    finally:
-        conn.close()
+    import_specs = perms.imports
+    blocked_symbols = perms.blocked_symbols
+    for spec in import_specs:
+        if not isinstance(spec["module"], tuple) or len(spec["module"]) != 2:
+            continue
+        module_name, module_alias = spec["module"]
+        module = __import__(module_name)
+
+        if not spec["names"]:
+            # No explicit imports means we import the module itself under the alias
+            builtins_scope[module_alias] = module
+            continue
+
+        if spec["names"][0][0] == "*":
+            # Star import: inject the pre-expanded names from the spec directly.
+            # The module alias is NOT injected - only the expanded public names
+            # are accessible (matching policy.py's imported_symbols logic).
+            for attr_name, import_alias in spec["names"][1:]:
+                if attr_name not in blocked_symbols:
+                    builtins_scope[import_alias] = getattr(module, attr_name)
+            continue
+
+        for attr_name, import_alias in spec["names"]:
+            if attr_name not in blocked_symbols:
+                attr = getattr(module, attr_name)
+                builtins_scope[import_alias] = attr
 
 
 def run_persistent_isolated_worker(
     conn: Connection,
     *,
-    initial_user_vars: dict[str, object],
     perms: Permissions,
+    initial_user_vars: dict[str, object],
 ) -> None:
     """Run command loop for a long-lived isolated worker process."""
+    if perms.memory_limit_bytes is not None:
+        _, hard_limit = resource.getrlimit(resource.RLIMIT_AS)
+        if hard_limit in (-1, resource.RLIM_INFINITY):
+            mem_limit = perms.memory_limit_bytes
+        else:
+            mem_limit = min(perms.memory_limit_bytes, hard_limit)
+        resource.setrlimit(resource.RLIMIT_AS, (mem_limit, mem_limit))
+
     local_user_vars = dict(initial_user_vars)
-    apply_worker_memory_limit(perms.memory_limit_bytes)
+    resolve_imports_for_worker(perms)
 
     while True:
         try:
@@ -213,11 +213,11 @@ def run_persistent_isolated_worker(
 
         command = coerce_worker_command(payload)
         if command is None:
-            if not send_worker_response(conn, build_worker_error_response("Invalid command payload.")):
+            if not send_worker_response(conn, build_error_response(message="Invalid command payload.")):
                 break
             continue
 
-        response, should_continue = apply_persistent_command(
+        response, should_continue = run_worker_command(
             command,
             local_user_vars=local_user_vars,
             perms=perms,
