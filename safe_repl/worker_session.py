@@ -1,54 +1,24 @@
 """Public process-isolated execution APIs."""
 
 from __future__ import annotations
-
 import multiprocessing
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
-from typing import Callable
+from typing import Final
 
 from .policy import Permissions
-from .process_control import (
-    PROCESS_JOIN_TIMEOUT_SECONDS,
-    await_worker_response,
-    finalize_process,
-    spawn_context_process,
-)
 from .process_protocol import (
-    PERSISTENT_OP_CLOSE,
-    PERSISTENT_OP_EXEC,
-    PERSISTENT_OP_RESET,
+    OP_CLOSE,
+    OP_EXEC,
+    OP_RESET,
+    WorkerResponse,
+    open_response_payload,
 )
 from .process_worker import (
-    apply_worker_response_to_user_vars,
     run_persistent_isolated_worker,
 )
 
-__all__ = [
-    "WorkerSession",
-]
-
-def _start_worker_process(
-    *,
-    target: Callable[..., None],
-    kwargs_builder: Callable[[Connection], dict[str, object]],
-    duplex: bool,
-) -> tuple[Connection, BaseProcess]:
-    """Create and start a worker process with a connected IPC pipe."""
-    ctx = multiprocessing.get_context("spawn")
-    parent_conn, child_conn = ctx.Pipe(duplex=duplex)
-
-    process = spawn_context_process(
-        context=ctx,
-        target=target,
-        kwargs=kwargs_builder(child_conn),
-        daemon=True,
-    )
-
-    process.start()
-
-    child_conn.close()
-    return parent_conn, process
+PROCESS_JOIN_TIMEOUT_SECONDS: Final[float] = 0.2
 
 
 class WorkerSession:
@@ -79,18 +49,39 @@ class WorkerSession:
         if self.is_open:
             return
 
-        parent_conn, process = _start_worker_process(
+        ctx = multiprocessing.get_context("spawn")
+        self._parent_conn, child_conn = ctx.Pipe(duplex=True)
+
+        process_factory = getattr(ctx, "Process", None)
+        if process_factory is None:
+            raise RuntimeError("Multiprocessing context does not provide a Process factory.")
+
+        self._process = process_factory(
             target=run_persistent_isolated_worker,
-            kwargs_builder=lambda child_conn: {
+            kwargs={
                 "conn": child_conn,
                 "initial_user_vars": dict(self._user_vars),
                 "perms": self._perms,
             },
-            duplex=True,
+            daemon=True
         )
+        if not isinstance(self._process, BaseProcess):
+            raise RuntimeError("Multiprocessing context returned unsupported process type.")
 
-        self._parent_conn = parent_conn
-        self._process = process
+        self._process.start()
+        child_conn.close()
+
+    def finalize(self, *, terminate: bool = False) -> None:
+        process = self._process
+        if process is None:
+            return
+        if terminate:
+            process.terminate()
+
+        process.join(timeout=PROCESS_JOIN_TIMEOUT_SECONDS)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=PROCESS_JOIN_TIMEOUT_SECONDS)
 
     def close(self) -> None:
         """Close worker and release process resources."""
@@ -107,27 +98,30 @@ class WorkerSession:
         try:
             if parent_conn is not None and process.is_alive():
                 try:
-                    parent_conn.send({"op": PERSISTENT_OP_CLOSE})
+                    parent_conn.send({"op": OP_CLOSE})
                     if parent_conn.poll(PROCESS_JOIN_TIMEOUT_SECONDS):
                         parent_conn.recv()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
         finally:
             if parent_conn is not None:
                 parent_conn.close()
-            finalize_process(process)
+            self.finalize()
 
-    def exec(self, code: str) -> object | None:
-        """Execute one snippet through the worker."""
-        response = self._request({"op": PERSISTENT_OP_EXEC, "code": code})
-        return apply_worker_response_to_user_vars(response, self._user_vars)
+    def exec(self, code: str) -> WorkerResponse:
+        """Execute one snippet through the worker and return the normalized payload."""
+        response = self._request({"op": OP_EXEC, "code": code})
+        self._user_vars.clear()
+        self._user_vars.update(response["user_vars"])
+        return response
 
     def reset(self) -> None:
         """Clear worker and local user variable state."""
-        response = self._request({"op": PERSISTENT_OP_RESET, "user_vars": {}})
-        apply_worker_response_to_user_vars(response, self._user_vars)
+        response = self._request({"op": OP_RESET, "user_vars": {}})
+        self._user_vars.clear()
+        self._user_vars.update(response["user_vars"])
 
-    def _request(self, command: dict[str, object]) -> object:
+    def _request(self, command: dict[str, object]) -> WorkerResponse:
         """Send command to worker and return response payload."""
         if not self.is_open:
             raise RuntimeError("Worker session is not open.")
@@ -137,13 +131,12 @@ class WorkerSession:
 
         try:
             self._parent_conn.send(command)
-            return await_worker_response(
-                self._parent_conn,
-                self._process,
-                timeout=self._perms.timeout_seconds
-            )
+            if self._parent_conn.poll(self._perms.timeout_seconds):
+                return open_response_payload(self._parent_conn.recv())
+            self.finalize(terminate=True)
+            raise TimeoutError("Execution timed out.")
         except TimeoutError:
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self.close()
             raise RuntimeError(f"Worker session failed: {exc}") from exc

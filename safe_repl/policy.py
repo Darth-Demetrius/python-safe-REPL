@@ -6,6 +6,7 @@ This module defines behavior-oriented policy types (`PermissionLevel`,
 
 import ast
 import builtins
+from collections.abc import Mapping
 from enum import IntEnum
 from typing import Optional
 import warnings
@@ -116,7 +117,8 @@ class Permissions:
         block_symbols = block_symbols or set()
         allow_nodes = allow_nodes or set()
         block_nodes = block_nodes or set()
-        self.imports = normalize_validate_imports(imports or [])
+        imports = imports or []
+        self.imports = normalize_validate_imports(imports)
 
         # Extract imported symbol names and add to allowed symbols
         self.imported_symbols: set[str] = set()
@@ -175,6 +177,82 @@ class Permissions:
             - (DEFAULT_BLOCKED_NODES[self.level] | block_nodes)
         )
         self.allowed_node_tuple = tuple(self.allowed_nodes)  # Efficient isinstance checks.
+
+    def to_relaunch_data(self) -> dict[str, object]:
+        """Return a compact payload for restoring this already-built policy.
+
+        Returns:
+            A plain-data dictionary containing resolved runtime policy fields.
+        """
+        return {
+            "level": int(self.level),
+            "modified": self.modified,
+            "allowed_symbols": sorted(self.allowed_symbols),
+            "blocked_symbols": sorted(self.blocked_symbols),
+            "allowed_nodes": sorted(node.__name__ for node in self.allowed_nodes),
+            "imports": list(self.imports),
+            "imported_symbols": sorted(self.imported_symbols),
+            "timeout_seconds": self.timeout_seconds,
+            "memory_limit_bytes": self.memory_limit_bytes,
+        }
+
+    @classmethod
+    def from_relaunch_data(cls, payload: Mapping[str, object]) -> "Permissions":
+        """Restore permissions from ``to_relaunch_data`` output.
+
+        Args:
+            payload: Serialized permission payload.
+
+        Returns:
+            A reconstructed ``Permissions`` instance.
+        """
+        restored = cls.__new__(cls)
+
+        restored.level = PermissionLevel(payload["level"])
+        restored.modified = bool(payload.get("modified", False))
+        restored.timeout_seconds = payload.get("timeout_seconds")
+        restored.memory_limit_bytes = payload.get("memory_limit_bytes")
+
+        allowed_symbols = payload.get("allowed_symbols", [])
+        blocked_symbols = payload.get("blocked_symbols", [])
+        node_names = payload.get("allowed_nodes", [])
+        imports = payload.get("imports", [])
+        imported_symbols = payload.get("imported_symbols", [])
+
+        restored.allowed_symbols = set(
+            allowed_symbols if isinstance(allowed_symbols, list) else []
+        )
+        restored.blocked_symbols = set(
+            blocked_symbols if isinstance(blocked_symbols, list) else []
+        )
+        restored.allowed_nodes = {
+            getattr(ast, name)
+            for name in (node_names if isinstance(node_names, list) else [])
+        }
+        restored.allowed_node_tuple = tuple(restored.allowed_nodes)
+        restored.imports = list(imports if isinstance(imports, list) else [])
+        restored.imported_symbols = set(
+            imported_symbols if isinstance(imported_symbols, list) else []
+        )
+
+        builtins_map = builtins.__dict__
+        restored.globals_dict = {"__name__": "__safe_repl__"}
+        restored.globals_dict["__builtins__"] = {
+            name: builtins_map[name]
+            for name in restored.allowed_symbols
+            if name in builtins_map
+        }
+
+        return restored
+
+    def __getstate__(self) -> dict[str, object]:
+        """Serialize policy state for pickling."""
+        return self.to_relaunch_data()
+
+    def __setstate__(self, state: Mapping[str, object]) -> None:
+        """Restore policy state from pickled relaunch payload."""
+        restored = self.from_relaunch_data(state)
+        self.__dict__.update(restored.__dict__)
 
     def __str__(self) -> str:
         """Return a compact human-readable summary of active policy."""

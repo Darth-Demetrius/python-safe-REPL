@@ -1,5 +1,8 @@
 import argparse
+import ast
 import math
+import pickle
+from collections.abc import Iterable, Iterator
 from typing import TypedDict
 
 import pytest
@@ -14,12 +17,46 @@ from safe_repl.repl_command_registry import CommandRegistry
 from safe_repl import (
     PermissionLevel,
     Permissions,
-    repl as run_repl,
     SafeReplCliArgError,
     SafeReplImportError,
     SafeSession,
     safe_exec,
 )
+
+
+class _ScriptedTerminal:
+    def __init__(self, inputs: Iterable[str]):
+        self._inputs: Iterator[str] = iter(inputs)
+        self.outputs: list[str] = []
+
+    def read(self, prompt: str) -> str:
+        del prompt
+        try:
+            return next(self._inputs)
+        except StopIteration as error:
+            raise EOFError() from error
+
+    def write(self, text: str) -> None:
+        self.outputs.append(text)
+
+
+def _worker_response(
+    *,
+    result: object | None = None,
+    output: str | None = None,
+    ok: bool = True,
+    message: str = "",
+    exception_type: str = "",
+    user_vars: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "ok": ok,
+        "result": result,
+        "user_vars": user_vars or {},
+        "output": output,
+        "exception_type": exception_type,
+        "message": message,
+    }
 
 
 def activate(level: PermissionLevel, imports: list[str] | None = None) -> Permissions:
@@ -99,6 +136,74 @@ def test_safe_session_constructor_defaults() -> None:
 def test_safe_session_constructor_with_imports() -> None:
     session = SafeSession(Permissions(base_perms=PermissionLevel.LIMITED, imports=["math:sqrt"]))
     assert session.exec("sqrt(9)") == 3.0
+
+
+def test_permissions_pickle_round_trip_preserves_configuration() -> None:
+    original = Permissions(
+        base_perms=PermissionLevel.PERMISSIVE,
+        allow_symbols={"my_symbol"},
+        block_symbols={"min"},
+        allow_nodes={ast.Try},
+        block_nodes={ast.With},
+        imports=["math:sqrt as root"],
+        timeout_seconds=3.25,
+        memory_limit_bytes=8 * 1024 * 1024,
+    )
+
+    restored = pickle.loads(pickle.dumps(original))
+
+    assert isinstance(restored, Permissions)
+    assert restored.level == original.level
+    assert restored.imports == original.imports
+    assert restored.timeout_seconds == original.timeout_seconds
+    assert restored.memory_limit_bytes == original.memory_limit_bytes
+    assert restored.allowed_symbols == original.allowed_symbols
+    assert restored.blocked_symbols == original.blocked_symbols
+    assert restored.allowed_nodes == original.allowed_nodes
+
+
+def test_safe_session_pickle_round_trip_supports_relaunch() -> None:
+    session = SafeSession(
+        Permissions(
+            base_perms=PermissionLevel.LIMITED,
+            imports=["math:sqrt as root"],
+        ),
+        user_vars={"x": 9},
+        command_char="!",
+    )
+    restored: SafeSession | None = None
+    try:
+        assert session.exec("x += 1") is None
+        restored = pickle.loads(pickle.dumps(session))
+
+        assert isinstance(restored, SafeSession)
+        assert restored.command_char == "!"
+        assert restored.user_vars["x"] == 10
+        assert restored.exec("root(x)") == math.sqrt(10)
+    finally:
+        session.close_worker_session()
+        if restored is not None:
+            restored.close_worker_session()
+
+
+def test_safe_session_relaunch_data_round_trip() -> None:
+    session = SafeSession(
+        Permissions(base_perms=PermissionLevel.LIMITED, imports=["math:sqrt as root"]),
+        user_vars={"x": 16},
+        command_char="#",
+    )
+    restored: SafeSession | None = None
+    try:
+        relaunch_payload = session.to_relaunch_data()
+        restored = SafeSession.from_relaunch_data(pickle.loads(pickle.dumps(relaunch_payload)))
+
+        assert restored.command_char == "#"
+        assert restored.user_vars == {"x": 16}
+        assert restored.exec("root(x)") == 4.0
+    finally:
+        session.close_worker_session()
+        if restored is not None:
+            restored.close_worker_session()
 
 
 def test_safe_session_from_cli_args_uses_default_math_imports() -> None:
@@ -380,12 +485,10 @@ def test_print_user_vars_prints_values(capsys: pytest.CaptureFixture[str]) -> No
 
 @pytest.mark.parametrize("run_count", [1, 2])
 def test_repl_startup_prints_basic_intro_and_help_hint(
-    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     run_count: int,
 ) -> None:
-    session = SafeSession(activate(PermissionLevel.LIMITED))
-    monkeypatch.setattr("builtins.input", lambda _prompt: "quit")
+    session = SafeSession(activate(PermissionLevel.LIMITED), read=lambda _prompt: "quit")
 
     for _ in range(run_count):
         session.repl()
@@ -403,14 +506,16 @@ def test_repl_startup_prints_basic_intro_and_help_hint(
     ],
 )
 def test_repl_vars_command_prints_expected_output(
-    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     command: str,
     expected_fragments: list[str],
 ) -> None:
     inputs = iter([command, "quit"])
-    session = SafeSession(activate(PermissionLevel.LIMITED), user_vars={"a": 1, "b": 2})
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(inputs))
+    session = SafeSession(
+        activate(PermissionLevel.LIMITED),
+        user_vars={"a": 1, "b": 2},
+        read=lambda _prompt: next(inputs),
+    )
 
     session.repl()
     output = capsys.readouterr().out
@@ -427,7 +532,6 @@ def test_repl_vars_command_prints_expected_output(
     ],
 )
 def test_repl_runs_injected_custom_command(
-    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     command_char: str,
     command_name: str,
@@ -443,10 +547,11 @@ def test_repl_runs_injected_custom_command(
     session = SafeSession(
         activate(PermissionLevel.LIMITED),
         repl_commands=registry,
+        command_char=command_char,
+        read=lambda _prompt: next(inputs),
     )
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(inputs))
 
-    session.repl(command_char=command_char)
+    session.repl()
     output = capsys.readouterr().out
 
     assert "pong" in output
@@ -545,7 +650,6 @@ def test_builtin_imports_command_prints_none_when_no_imports(
 
 
 def test_repl_persists_custom_command_char_between_runs(
-    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     registry = CommandRegistry()
@@ -554,20 +658,152 @@ def test_repl_persists_custom_command_char_between_runs(
     def _ping_command(_args: str, _session: SafeSession) -> None:
         print("pong")
 
-    session = SafeSession(activate(PermissionLevel.LIMITED), repl_commands=registry)
+    active_inputs: list[Iterator[str]] = [iter(["!ping", "quit"])]
 
-    first_inputs = iter(["!ping", "quit"])
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(first_inputs))
-    session.repl(command_char="!")
+    session = SafeSession(
+        activate(PermissionLevel.LIMITED),
+        repl_commands=registry,
+        command_char="!",
+        read=lambda _prompt: next(active_inputs[0]),
+    )
+
+    session.repl()
     first_output = capsys.readouterr().out
 
-    second_inputs = iter(["!ping", "quit"])
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(second_inputs))
+    active_inputs[0] = iter(["!ping", "quit"])
     session.repl()
     second_output = capsys.readouterr().out
 
     assert "pong" in first_output
     assert "pong" in second_output
+
+
+def test_repl_accepts_scripted_io_for_non_cli_usage() -> None:
+    scripted_terminal = _ScriptedTerminal(["x = 5", "x * 3", "quit"])
+    session = SafeSession(
+        activate(PermissionLevel.LIMITED),
+        read=scripted_terminal.read,
+        write=scripted_terminal.write,
+    )
+
+    session.repl()
+
+    assert "Type 'quit' or 'exit' to exit." in scripted_terminal.outputs
+    assert "15" in scripted_terminal.outputs
+    assert scripted_terminal.outputs[-1] == "Bye"
+
+
+def test_exec_routes_worker_output_to_constructor_writer(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeWorkerSession:
+        def __init__(self, *, perms: Permissions, user_vars: dict[str, object]) -> None:
+            self._user_vars = user_vars
+
+        def open(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        def exec(self, code: str) -> dict[str, object]:
+            del code
+            return _worker_response(result=7, output=None)
+
+        def reset(self) -> None:
+            self._user_vars.clear()
+
+    output_lines: list[str] = []
+    session = SafeSession(
+        activate(PermissionLevel.LIMITED),
+        write=output_lines.append,
+    )
+    monkeypatch.setattr("safe_repl.session.WorkerSession", _FakeWorkerSession)
+
+    result = session.exec("2 + 5")
+
+    assert result == 7
+    assert output_lines == []
+
+
+def test_exec_emits_output_before_raising_worker_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeWorkerSession:
+        def __init__(self, *, perms: Permissions, user_vars: dict[str, object]) -> None:
+            self._user_vars = user_vars
+
+        def open(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        def exec(self, code: str) -> dict[str, object]:
+            del code
+            return _worker_response(
+                ok=False,
+                output="before error",
+                message="boom",
+                exception_type="ValueError",
+            )
+
+        def reset(self) -> None:
+            self._user_vars.clear()
+
+    output_lines: list[str] = []
+    session = SafeSession(
+        activate(PermissionLevel.LIMITED),
+        write=output_lines.append,
+    )
+    monkeypatch.setattr("safe_repl.session.WorkerSession", _FakeWorkerSession)
+
+    with pytest.raises(ValueError, match="boom"):
+        session.exec("x")
+
+    assert output_lines == ["before error"]
+
+
+def test_repl_accepts_direct_read_and_output_callbacks(
+) -> None:
+    scripted_terminal = _ScriptedTerminal(["quit"])
+    session = SafeSession(
+        activate(PermissionLevel.LIMITED),
+        read=scripted_terminal.read,
+        write=scripted_terminal.write,
+    )
+
+    session.repl()
+
+    assert "Type 'quit' or 'exit' to exit." in scripted_terminal.outputs
+    assert scripted_terminal.outputs[-1] == "Bye"
+
+
+def test_exec_uses_constructor_writer_instead_of_stdout(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    class _FakeWorkerSession:
+        def __init__(self, *, perms: Permissions, user_vars: dict[str, object]) -> None:
+            self._user_vars = user_vars
+
+        def open(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        def exec(self, code: str) -> dict[str, object]:
+            del code
+            return _worker_response(result=None, output="hello")
+
+        def reset(self) -> None:
+            self._user_vars.clear()
+
+    output_lines: list[str] = []
+    session = SafeSession(
+        activate(PermissionLevel.LIMITED),
+        write=output_lines.append,
+    )
+    monkeypatch.setattr("safe_repl.session.WorkerSession", _FakeWorkerSession)
+
+    session.exec("x = 1")
+
+    assert capsys.readouterr().out == ""
+    assert output_lines == ["hello"]
 
 
 def test_repl_uses_worker_session(
@@ -591,17 +827,19 @@ def test_repl_uses_worker_session(
         def close(self) -> None:
             tracker["closed"] += 1
 
-        def exec(self, code: str) -> object | None:
+        def exec(self, code: str) -> dict[str, object]:
             tracker["calls"].append(code)
-            return 42
+            return _worker_response(result=42, output=None)
 
         def reset(self) -> None:
             self._user_vars.clear()
 
     inputs = iter(["2 + 2", "quit"])
-    session = SafeSession(activate(PermissionLevel.LIMITED))
+    session = SafeSession(
+        activate(PermissionLevel.LIMITED),
+        read=lambda _prompt: next(inputs),
+    )
     monkeypatch.setattr("safe_repl.session.WorkerSession", _FakeWorkerSession)
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(inputs))
 
     session.repl()
     output = capsys.readouterr().out
@@ -626,62 +864,27 @@ def test_repl_does_not_use_safe_session_exec(
         def close(self) -> None:
             pass
 
-        def exec(self, code: str) -> object | None:
-            return 7
+        def exec(self, code: str) -> dict[str, object]:
+            return _worker_response(result=7, output=None)
 
         def reset(self) -> None:
             self._user_vars.clear()
 
     inputs = iter(["3 + 4", "quit"])
-    session = SafeSession(activate(PermissionLevel.LIMITED))
+    session = SafeSession(
+        activate(PermissionLevel.LIMITED),
+        read=lambda _prompt: next(inputs),
+    )
     monkeypatch.setattr("safe_repl.session.WorkerSession", _FakeWorkerSession)
     monkeypatch.setattr(
         SafeSession,
         "exec",
         lambda self, code: (_ for _ in ()).throw(AssertionError("SafeSession.exec should not be used by repl")),
     )
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(inputs))
-
     session.repl()
     output = capsys.readouterr().out
 
     assert "7" in output
-
-
-def test_module_repl_uses_worker_session(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    tracker: dict[str, object] = {"calls": []}
-
-    class _FakeWorkerSession:
-        def __init__(self, *, perms: Permissions, user_vars: dict[str, object]) -> None:
-            self._user_vars = user_vars
-
-        def open(self) -> None:
-            pass
-
-        def close(self) -> None:
-            pass
-
-        def exec(self, code: str) -> object | None:
-            cast_calls = tracker["calls"]
-            assert isinstance(cast_calls, list)
-            cast_calls.append(code)
-            return 123
-
-        def reset(self) -> None:
-            self._user_vars.clear()
-
-    monkeypatch.setattr("safe_repl.session.WorkerSession", _FakeWorkerSession)
-    inputs = iter(["2 + 2", "quit"])
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(inputs))
-
-    run_repl(perms=activate(PermissionLevel.LIMITED))
-    output = capsys.readouterr().out
-
-    assert tracker["calls"] == ["2 + 2"]
-    assert "123" in output
 
 
 def test_reset_propagates_to_open_worker_session(
@@ -699,8 +902,8 @@ def test_reset_propagates_to_open_worker_session(
         def close(self) -> None:
             pass
 
-        def exec(self, code: str) -> object | None:
-            return None
+        def exec(self, code: str) -> dict[str, object]:
+            return _worker_response(result=None, output=None)
 
         def reset(self) -> None:
             tracker["reset"] += 1

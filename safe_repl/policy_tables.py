@@ -10,6 +10,7 @@ import builtins
 
 # Builtin capability groups by feature area.
 CORE_FUNCTIONS = {
+    "print",
     "abs",
     "round",
     "min",

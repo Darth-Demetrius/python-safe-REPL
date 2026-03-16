@@ -3,7 +3,7 @@
 Public API is re-exported from focused internal modules:
 - Policy: `PermissionLevel`, `Permissions`, limits/tuning helpers
 - Engine: `safe_exec`
-- Session: `SafeSession`, `repl`
+- Session: `SafeSession`
 - CLI: `main`
 """
 
@@ -20,7 +20,7 @@ from .validator import validate_ast
 from .repl_command_registry import (
     CommandRegistry,
 )
-from .session import SafeSession, repl
+from .session import SafeSession
 
 __all__ = (
     "PermissionLevel",
@@ -29,7 +29,6 @@ __all__ = (
     "CommandRegistry",
     "safe_exec",
     "validate_ast",
-    "repl",
     "main",
     "SafeReplImportError",
     "SafeReplCliArgError",

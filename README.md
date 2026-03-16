@@ -7,10 +7,10 @@ Safe Python REPL with tiered permission levels for restricted code execution.
 The package-level imports from `safe_repl` are the supported public API surface:
 
 - `PermissionLevel`, `Permissions`, `SafeSession`
-- `safe_exec`, `validate_ast`, `repl`, `main`
+- `safe_exec`, `validate_ast`, `main`
 - `SafeReplImportError`, `SafeReplCliArgError`
 
-Submodules (`safe_repl.policy`, `safe_repl.engine`, `safe_repl.validator`, `safe_repl.process_isolation`, etc.) are implementation details and may change more frequently.
+Submodules (`safe_repl.policy`, `safe_repl.engine`, `safe_repl.validator`, `safe_repl.worker_session`, etc.) are implementation details and may change more frequently.
 
 ## Install
 
@@ -50,13 +50,10 @@ print(result)  # 14
 
 ## API reference
 
-### Types
 
 - `PermissionLevel`: `MINIMUM`, `LIMITED`, `PERMISSIVE`, `UNSUPERVISED`
   - Invalid values warn and default to level `0` (`MINIMUM`).
 - `Permissions`: resolved policy object used by execution and REPL
-  - Constructor defaults to `base_perms=PermissionLevel.LIMITED`.
-  - `allow_symbols`, `block_symbols`, `allow_nodes`, `block_nodes`, and `imports` are optional (`None` defaults to empty values).
   - Supports optional per-instance overrides:
       `timeout_seconds: float | None = None`, `memory_limit_bytes: int | None = None`.
 - `SafeSession`: stateful executor that keeps `user_vars` across calls
@@ -80,8 +77,10 @@ print(result)  # 14
 - `Permissions.set_limits(timeout_seconds: float | None = None, memory_limit_bytes: int | None = None) -> None`
   - Instance method that overrides timeout and/or memory limit for this `Permissions` object.
   - Values are clamped to safe minimums (`timeout_seconds >= 1`, `memory_limit_bytes >= 1024`).
-- `repl(*, perms: Permissions) -> None`
-  - Starts the interactive REPL loop (internally uses `SafeSession`).
+- `Permissions.to_relaunch_data() -> dict[str, object]`
+  - Returns resolved policy runtime state that is safe to pickle and store.
+- `Permissions.from_relaunch_data(payload: Mapping[str, object]) -> Permissions`
+  - Rebuilds a policy from relaunch data.
 - `main() -> None`
   - CLI entrypoint used by `safe-repl` and `python -m safe_repl`.
 
@@ -90,6 +89,8 @@ print(result)  # 14
 - `SafeSession(perms: Permissions, user_vars: dict[str, object] | None = None)`
 - `SafeSession.from_cli_args(args: argparse.Namespace, ..., user_vars: dict[str, object] | None = None) -> SafeSession`
   - Builds a session from parsed CLI args (same logic used by `main()`).
+- `SafeSession.from_relaunch_data(payload: Mapping[str, object], ..., repl_commands: CommandRegistry | None = None) -> SafeSession`
+  - Rebuilds a session from relaunch payload data.
 - `exec(code: str) -> object | None`
   - Executes code using session permissions and persistent variables.
   - Opens a worker session on first use and reuses it for subsequent `exec(...)` calls.
@@ -99,24 +100,50 @@ print(result)  # 14
   - Starts the session worker if it is not already running.
 - `close_worker_session() -> None`
   - Stops the session worker if active.
-- `repl(*, command_char: str | None = None) -> None`
+- `to_relaunch_data() -> dict[str, object]`
+  - Returns a pickle-friendly relaunch payload with policy, variables, and command prefix.
+  - Runtime-only resources (worker process and command callbacks) are excluded.
+- `repl() -> None`
   - Runs interactive REPL bound to this session.
   - Prints a short startup hint for exiting and discovering commands.
   - Use REPL commands to inspect available functions, nodes, imports, level, and user vars.
-  - `command_char` sets the REPL command prefix (for example `:` or `!`) and persists on the session.
-  - Opens one worker session per REPL run and reuses it for every entered command.
+  - Uses one worker session per REPL run and reuses it for every entered command.
+  - Configure command prefix and I/O callbacks at construction time.
+
+Both `Permissions` and `SafeSession` support direct Python pickle round-trips.
+
+### Pickle round-trip and relaunch
+
+```python
+import pickle
+
+from safe_repl import PermissionLevel, Permissions, SafeSession
+
+session = SafeSession(
+    Permissions(base_perms=PermissionLevel.LIMITED, imports=["math:sqrt as root"]),
+    user_vars={"x": 25},
+)
+
+# Direct session pickle round-trip.
+restored = pickle.loads(pickle.dumps(session))
+print(restored.exec("root(x)"))  # 5.0
+
+# Explicit relaunch payload workflow.
+payload = session.to_relaunch_data()
+blob = pickle.dumps(payload)
+restored2 = SafeSession.from_relaunch_data(pickle.loads(blob))
+print(restored2.exec("x + 1"))  # 26
+```
 
 ### Internal module split (implementation detail)
 
-- `safe_repl.process_isolation`
-  - Worker runtime APIs and process isolation orchestration.
-- `safe_repl.process_control`
-  - Process lifecycle, context-process construction checks, timeout enforcement, and worker finalization helpers.
 - `safe_repl.process_worker`
   - Worker-side execution, command handling, and response normalization.
 - `safe_repl.process_protocol`
   - Shared IPC protocol constants and typed worker payload schemas.
   - Worker command parsing constrains `op` to `exec|reset|close` and returns normalized command payloads with required keys.
+- `safe_repl.worker_session`
+  - Parent-side worker lifecycle management and IPC request/response orchestration.
 - `safe_repl.sandbox`
   - Linux-focused resource limit helpers for process isolation (`with_limits`, cgroup attach helpers).
 
@@ -177,6 +204,51 @@ perms = Permissions(
 session = SafeSession(perms)
 session.exec("x = 2")
 print(session.exec("x * 10"))  # 20
+```
+
+### Embedded REPL configuration
+
+```python
+from collections.abc import Iterator
+
+from safe_repl import PermissionLevel, Permissions, SafeSession
+
+
+def make_reader(lines: list[str]):
+    values: Iterator[str] = iter(lines)
+
+    def read(_prompt: str) -> str:
+        try:
+            return next(values)
+        except StopIteration as error:
+            raise EOFError() from error
+
+    return read
+
+session = SafeSession(
+  Permissions(base_perms=PermissionLevel.LIMITED),
+  read=make_reader(["x = 3", "x * 7", "quit"]),
+  write=outputs.append,
+)
+outputs: list[str] = []
+
+session.repl()
+print(outputs)  # includes startup/help text, "21", and "Bye"
+```
+
+### Custom writer callback pattern
+
+```python
+from safe_repl import PermissionLevel, Permissions, SafeSession
+
+lines: list[str] = []
+session = SafeSession(
+  Permissions(base_perms=PermissionLevel.LIMITED),
+  write=lines.append,
+)
+session.exec("print('hello')")
+
+# all worker output is routed into this same output stream
 ```
 
 ### Error model
@@ -355,7 +427,7 @@ Current automated test coverage includes:
   - End-to-end `python -m safe_repl` subprocess behavior
   - CLI success paths and non-zero exit error paths
 - `tests/test_process_control.py`
-  - Process lifecycle, context-process guardrails, and timeout/finalization behavior
+  - Worker session lifecycle, timeout handling, and IPC payload round-trips
 - `tests/test_process_protocol.py`
   - Worker command payload coercion and normalization rules
 - `tests/test_security_api.py`
@@ -363,8 +435,6 @@ Current automated test coverage includes:
 
 ## TODO
 
-- Manually review code.
-  - [ ] `session.py`
 - Add ability to create custom REPL commands during runtime via session API.
 - Use `colorama` or similar for colored CLI output.
 - Graceful handling of lumped I/O à la discord messaging. (don't send a bajillion individual messages in response to a single message)

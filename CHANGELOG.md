@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-03-16
+
+### Added
+
+- Added relaunch serialization APIs for `Permissions` and `SafeSession` (`to_relaunch_data(...)` / `from_relaunch_data(...)`) and pickle round-trip hooks that persist only relaunch-safe session state.
+
+### Changed
+
+- Simplified worker IPC and session execution so all worker operations use one normalized response payload that always carries result, user-vars state, output text, and exception metadata.
+- Simplified REPL embedding by replacing custom REPL I/O protocol classes with constructor-level `read(prompt)` and `write(text)` callbacks on `SafeSession`.
+
+### Documentation
+
+- Updated README module/layout notes and examples to reflect the current worker-session internals and callback-based REPL/session APIs.
+
 ## [0.4.2] - 2026-03-11
 
 ### Added
@@ -123,7 +138,8 @@
 - Added unit and integration CLI tests for error handling and flag behavior.
 - Expanded README with API surface, exception handling, execution-mode defaults, internal module split notes, and persistent subprocess lifecycle examples.
 
-[Unreleased]: https://github.com/Darth-Demetrius/python-sub-REPL/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/Darth-Demetrius/python-sub-REPL/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.4.3
 [0.4.2]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.4.2
 [0.4.1]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.4.1
 [0.4.0]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.4.0

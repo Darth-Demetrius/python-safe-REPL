@@ -1,11 +1,21 @@
 """Stateful session and interactive REPL orchestration."""
 
 import argparse
+import builtins
+import contextlib
+import io
 from collections.abc import Callable
+from collections.abc import Mapping
+from typing import cast
 
 from .policy import PermissionLevel, Permissions
-from .process_isolation import WorkerSession
+from .worker_session import WorkerSession
+from .process_protocol import WorkerResponse
 from .repl_command_registry import CommandRegistry
+
+
+ReadFunc = Callable[[str], str]
+WriteFunc = Callable[[str], None]
 
 
 class SafeSession:
@@ -16,21 +26,67 @@ class SafeSession:
         perms: Permissions,
         user_vars: dict[str, object] | None = None,
         *,
-        repl_commands: CommandRegistry | None = None,
         command_char: str = ":",
+        repl_commands: CommandRegistry | None = None,
+        read: ReadFunc = input,
+        write: WriteFunc = print,
     ):
         """Create a session with persistent variables and worker-backed execution."""
         self.perms = perms
         self.user_vars: dict[str, object] = user_vars or {}
         self.command_char = command_char
-        self._worker_session: WorkerSession | None = None
         self.command_registry = repl_commands or CommandRegistry()
-
+        self._worker_session: WorkerSession | None = None
+        self._write = write
+        self._read = read
         self._cache_startup_summaries()
+
+    def to_relaunch_data(self) -> dict[str, object]:
+        """Return the minimal state required to relaunch this session.
+
+        Returns:
+            A pickle-friendly payload containing permissions, user variables,
+            and command prefix configuration.
+        """
+        return {
+            "perms": self.perms.to_relaunch_data(),
+            "user_vars": dict(self.user_vars),
+            "command_char": self.command_char,
+        }
+
+    @classmethod
+    def from_relaunch_data(
+        cls,
+        payload: Mapping[str, object],
+        *,
+        repl_commands: CommandRegistry | None = None,
+    ) -> "SafeSession":
+        """Rebuild a session from ``to_relaunch_data`` output."""
+        perms_payload = payload["perms"]
+        user_vars_payload = payload.get("user_vars", {})
+        command_char_payload = payload.get("command_char", ":")
+
+        user_vars = dict(user_vars_payload) if isinstance(user_vars_payload, dict) else {}
+        command_char = command_char_payload if isinstance(command_char_payload, str) else ":"
+
+        return cls(
+            perms=Permissions.from_relaunch_data(cast(Mapping[str, object], perms_payload)),
+            user_vars=user_vars,
+            repl_commands=repl_commands,
+            command_char=command_char,
+        )
+
+    def __getstate__(self) -> dict[str, object]:
+        """Serialize relaunch-safe state for pickling."""
+        return self.to_relaunch_data()
+
+    def __setstate__(self, state: Mapping[str, object]) -> None:
+        """Restore from pickled relaunch payload."""
+        restored = self.from_relaunch_data(state)
+        self.__dict__.update(restored.__dict__)
 
     def _cache_startup_summaries(self) -> None:
         """Precompute static startup summary strings for this session."""
-
         builtins_scope = self.perms.globals_dict.get("__builtins__", {})
         builtins_names = (
             sorted(builtins_scope.keys()) if isinstance(builtins_scope, dict) else []
@@ -41,16 +97,16 @@ class SafeSession:
 
     def print_builtins(self) -> None:
         """Print builtins summary for the current session permissions."""
-        print(f"  Builtins: {self._startup_builtins}")
+        self.print(f"  Builtins: {self._startup_builtins}")
 
     def print_nodes(self) -> None:
         """Print AST-node summary for the current session permissions."""
-        print(f"  Nodes: {self._startup_nodes}")
+        self.print(f"  Nodes: {self._startup_nodes}")
 
     def print_imports(self) -> None:
         """Print import summary for the current session permissions."""
         if self._startup_imports:
-            print(f"  Imports: {self._startup_imports}")
+            self.print(f"  Imports: {self._startup_imports}")
 
     def print_user_vars(self, *, include_values: bool = True) -> str:
         """Print user variable names, optionally including their values."""
@@ -65,38 +121,56 @@ class SafeSession:
         else:
             rendered_string += ", ".join(sorted(self.user_vars.keys()))
 
-        print(rendered_string)
+        self.print(rendered_string)
         return rendered_string
 
-    def _print_repl_intro(self) -> None:
-        """Print basic REPL guidance and available command help lines."""
-        print("Type 'quit' or 'exit' to exit.")
-        self.command_registry.show_help(cmd_char=self.command_char)
+    def input(self, prompt: str = "") -> str:
+        """Read one line of input from the user."""
+        return self._read(prompt)
+
+    def print(self, output: str | None) -> None:
+        """Emit captured output text as line-oriented callback events."""
+        if output is None:
+            return
+        for line in output.splitlines():
+            self._write(line)
+
+    def _dispatch_command(self, line: str) -> bool | object:
+        """Run one REPL command and redirect command print output."""
+        output_buffer = io.StringIO()
+        with contextlib.redirect_stdout(output_buffer):
+            result = self.command_registry.dispatch(line, session=self)
+        self.print(output_buffer.getvalue() or None)
+        return result
 
     def _run_repl_loop(self, *, execute: Callable[[str], object | None]) -> None:
         """Run interactive input/execute loop until user exits."""
         while True:
             try:
-                line = input("> ").strip()
+                line = self.input("> ").strip()
             except (EOFError, KeyboardInterrupt):
-                print("", "Bye")
+                self.print("")
+                self.print("Bye")
                 break
 
             if not line:
                 continue
             if line.lower() in {"quit", "exit"}:
-                print("Bye")
+                self.print("Bye")
                 break
             if line.startswith(self.command_char):
-                if self.command_registry.dispatch(line.removeprefix(self.command_char), session=self):
+                command_result = self._dispatch_command(
+                    line.removeprefix(self.command_char),
+                )
+                if command_result:
                     continue
 
             try:
                 result = execute(line)
                 if result is not None:
-                    print(result)
+                    self.print(str(result))
             except Exception as error:
-                print(f"Error: {error}")
+                self.print(f"Error: {error}")
 
     @classmethod
     def from_cli_args(
@@ -119,15 +193,27 @@ class SafeSession:
             user_vars=user_vars,
         )
 
-    def exec(
-        self,
-        code: str,
-    ) -> object | None:
+    def _resolve_worker_response(self, response: WorkerResponse) -> object | None:
+        """Emit worker output and either return result or raise worker exception."""
+        self.print(response["output"])
+        if response["ok"]:
+            return response["result"]
+
+        if response["exception_type"] is not None:
+            candidate = getattr(builtins, response["exception_type"], None)
+            if isinstance(candidate, type) and issubclass(candidate, Exception):
+                raise candidate(response["message"])
+
+        raise RuntimeError(f"Worker raised {response['exception_type']}: {response['message']}")
+
+    def exec(self, code: str) -> object | None:
         """Execute one snippet through the session's worker."""
         self.open_worker_session()
         if self._worker_session is None:
             raise RuntimeError("Worker session is unavailable for execution.")
-        return self._worker_session.exec(code)
+
+        response = self._worker_session.exec(code)
+        return self._resolve_worker_response(response)
 
     def reset(self) -> None:
         """Reset local variables and worker state if open."""
@@ -151,40 +237,24 @@ class SafeSession:
         if session is not None:
             session.close()
 
-    def repl(
-        self,
-        *,
-        command_char: str | None = None,
-    ) -> None:
-        """Run interactive single-line REPL loop.
-
-        Args:
-            command_char: Optional prefix used to identify REPL commands.
-                When omitted, reuses the session's current command prefix.
-
-        Uses one worker session for the REPL run and closes it on exit.
-        """
-        if command_char is not None:
-            self.command_char = command_char
-
+    def repl(self) -> None:
+        """Run interactive single-line REPL loop."""
         self.open_worker_session()
         if self._worker_session is None:
             raise RuntimeError("Worker session is unavailable for REPL execution.")
 
-        self._print_repl_intro()
+        self.print("Type 'quit' or 'exit' to exit.")
+        output_buffer = io.StringIO()
+        with contextlib.redirect_stdout(output_buffer):
+            self.command_registry.show_help(cmd_char=self.command_char)
+        self.print(output_buffer.getvalue() or None)
 
         try:
-            self._run_repl_loop(execute=self._worker_session.exec)
+            def _execute_and_capture(code: str) -> object | None:
+                assert self._worker_session is not None
+                response = self._worker_session.exec(code)
+                return self._resolve_worker_response(response)
+
+            self._run_repl_loop(execute=_execute_and_capture)
         finally:
             self.close_worker_session()
-
-
-def repl(
-    *,
-    perms: Permissions,
-    command_char: str = ":",
-) -> None:
-    """Convenience function to launch a REPL for one permissions object."""
-    SafeSession(perms).repl(
-        command_char=command_char,
-    )
