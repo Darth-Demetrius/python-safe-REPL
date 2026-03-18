@@ -49,7 +49,7 @@ class _FakeConnection:
 
 def _build_session() -> WorkerSession:
     return WorkerSession(
-        perms=Permissions(base_perms=PermissionLevel.LIMITED),
+        perms=Permissions(perm_level=PermissionLevel.LIMITED),
         user_vars={},
     )
 

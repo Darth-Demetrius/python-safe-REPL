@@ -40,7 +40,7 @@ def time_call(func, iterations: int) -> float:
 
 
 def bench(trees: dict[str, ast.AST], iterations: int) -> dict[str, float]:
-    perms = Permissions(base_perms=PermissionLevel.UNSUPERVISED)  # allow attribute access for bench
+    perms = Permissions(perm_level=PermissionLevel.UNSUPERVISED)  # allow attribute access for bench
     results = {}
     # Provide some user variables referenced by snippets to avoid validation errors
     user_vars = {"obj": object(), "arr": [], "a": [], "x": 0}

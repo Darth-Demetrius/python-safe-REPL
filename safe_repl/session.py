@@ -9,13 +9,13 @@ from collections.abc import Mapping
 from typing import cast
 
 from .policy import PermissionLevel, Permissions
-from .worker_session import WorkerSession
-from .process_protocol import WorkerResponse
+from .process_protocol import (
+    WorkerResponse,
+    decode_user_vars_from_ipc,
+    encode_user_vars_for_ipc,
+)
 from .repl_command_registry import CommandRegistry
-
-
-ReadFunc = Callable[[str], str]
-WriteFunc = Callable[[str], None]
+from .worker_session import WorkerSession
 
 
 class SafeSession:
@@ -28,8 +28,6 @@ class SafeSession:
         *,
         command_char: str = ":",
         repl_commands: CommandRegistry | None = None,
-        read: ReadFunc = input,
-        write: WriteFunc = print,
     ):
         """Create a session with persistent variables and worker-backed execution."""
         self.perms = perms
@@ -37,8 +35,6 @@ class SafeSession:
         self.command_char = command_char
         self.command_registry = repl_commands or CommandRegistry()
         self._worker_session: WorkerSession | None = None
-        self._write = write
-        self._read = read
         self._cache_startup_summaries()
 
     def to_relaunch_data(self) -> dict[str, object]:
@@ -50,7 +46,7 @@ class SafeSession:
         """
         return {
             "perms": self.perms.to_relaunch_data(),
-            "user_vars": dict(self.user_vars),
+            "user_vars": encode_user_vars_for_ipc(dict(self.user_vars)),
             "command_char": self.command_char,
         }
 
@@ -66,7 +62,11 @@ class SafeSession:
         user_vars_payload = payload.get("user_vars", {})
         command_char_payload = payload.get("command_char", ":")
 
-        user_vars = dict(user_vars_payload) if isinstance(user_vars_payload, dict) else {}
+        user_vars = (
+            decode_user_vars_from_ipc(dict(user_vars_payload))
+            if isinstance(user_vars_payload, dict)
+            else {}
+        )
         command_char = command_char_payload if isinstance(command_char_payload, str) else ":"
 
         return cls(
@@ -97,16 +97,16 @@ class SafeSession:
 
     def print_builtins(self) -> None:
         """Print builtins summary for the current session permissions."""
-        self.print(f"  Builtins: {self._startup_builtins}")
+        print(f"  Builtins: {self._startup_builtins}")
 
     def print_nodes(self) -> None:
         """Print AST-node summary for the current session permissions."""
-        self.print(f"  Nodes: {self._startup_nodes}")
+        print(f"  Nodes: {self._startup_nodes}")
 
     def print_imports(self) -> None:
         """Print import summary for the current session permissions."""
         if self._startup_imports:
-            self.print(f"  Imports: {self._startup_imports}")
+            print(f"  Imports: {self._startup_imports}")
 
     def print_user_vars(self, *, include_values: bool = True) -> str:
         """Print user variable names, optionally including their values."""
@@ -121,42 +121,33 @@ class SafeSession:
         else:
             rendered_string += ", ".join(sorted(self.user_vars.keys()))
 
-        self.print(rendered_string)
+        print(rendered_string)
         return rendered_string
-
-    def input(self, prompt: str = "") -> str:
-        """Read one line of input from the user."""
-        return self._read(prompt)
-
-    def print(self, output: str | None) -> None:
-        """Emit captured output text as line-oriented callback events."""
-        if output is None:
-            return
-        for line in output.splitlines():
-            self._write(line)
 
     def _dispatch_command(self, line: str) -> bool | object:
         """Run one REPL command and redirect command print output."""
         output_buffer = io.StringIO()
         with contextlib.redirect_stdout(output_buffer):
             result = self.command_registry.dispatch(line, session=self)
-        self.print(output_buffer.getvalue() or None)
+        output = output_buffer.getvalue()
+        if output:
+            print(output, end="")
         return result
 
     def _run_repl_loop(self, *, execute: Callable[[str], object | None]) -> None:
         """Run interactive input/execute loop until user exits."""
         while True:
             try:
-                line = self.input("> ").strip()
+                line = input("> ").strip()
             except (EOFError, KeyboardInterrupt):
-                self.print("")
-                self.print("Bye")
+                print("")
+                print("Bye")
                 break
 
             if not line:
                 continue
             if line.lower() in {"quit", "exit"}:
-                self.print("Bye")
+                print("Bye")
                 break
             if line.startswith(self.command_char):
                 command_result = self._dispatch_command(
@@ -168,9 +159,9 @@ class SafeSession:
             try:
                 result = execute(line)
                 if result is not None:
-                    self.print(str(result))
+                    print(str(result))
             except Exception as error:
-                self.print(f"Error: {error}")
+                print(f"Error: {error}")
 
     @classmethod
     def from_cli_args(
@@ -181,7 +172,7 @@ class SafeSession:
     ) -> "SafeSession":
         """Build a session from parsed CLI arguments and normalized mode."""
         perms = Permissions(
-            base_perms=PermissionLevel(args.level),
+            perm_level=PermissionLevel(args.level),
             imports=args.imports if args.imports is not None else ["math:*"],
             allow_symbols=set(args.allow_functions) if args.allow_functions else None,
             block_symbols=set(args.block_functions) if args.block_functions else None,
@@ -195,7 +186,9 @@ class SafeSession:
 
     def _resolve_worker_response(self, response: WorkerResponse) -> object | None:
         """Emit worker output and either return result or raise worker exception."""
-        self.print(response["output"])
+        output = response["output"]
+        if output:
+            print(output, end="")
         if response["ok"]:
             return response["result"]
 
@@ -243,11 +236,13 @@ class SafeSession:
         if self._worker_session is None:
             raise RuntimeError("Worker session is unavailable for REPL execution.")
 
-        self.print("Type 'quit' or 'exit' to exit.")
+        print("Type 'quit' or 'exit' to exit.")
         output_buffer = io.StringIO()
         with contextlib.redirect_stdout(output_buffer):
             self.command_registry.show_help(cmd_char=self.command_char)
-        self.print(output_buffer.getvalue() or None)
+        output = output_buffer.getvalue()
+        if output:
+            print(output, end="")
 
         try:
             def _execute_and_capture(code: str) -> object | None:

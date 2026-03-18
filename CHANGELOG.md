@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-03-17
+
+### Added
+
+- Added `cloudpickle` as a runtime dependency for IPC fallback serialization.
+- Added `PermissionLevel.NONE` as explicit level `0`, and extended default policy tables to include a `NONE` baseline.
+- Added normalized import utilities (`imports_union`, `imports_intersection`, `collect_import_symbols`) and switched normalized import specs to a module/alias-keyed mapping format.
+- Added `Permissions` ordering and merge helpers (`__int__`, `__eq__`, `__lt__`, `permissive_merge(...)`, `restrictive_merge(...)`).
+
+### Changed
+
+- Several small refactors.
+- Changed default permission baseline to `PermissionLevel.NONE` when `perm_level` is omitted.
+- Removed `SafeSession` constructor I/O callbacks and setter methods. Session and REPL I/O now use built-in `input()`/`print()` directly; embedding should use `contextlib.redirect_stdout(...)` and patch `builtins.input` for scripted input.
+- Reworked import handling so `Permissions.build_globals()` resolves imports directly into execution globals through `importlib.import_module(...)`.
+- Hardened worker IPC serialization for non-pickleable values by encoding response values with `cloudpickle`; response `result` falls back to safe placeholder text when serialization fails, while un-serializable `user_vars` entries are filtered out to keep transport stable.
+- Updated `SafeSession` relaunch/pickle serialization and worker command transport to encode/decode `user_vars` through shared IPC codec helpers, enabling user-defined functions in pickled session variables.
+
+### Fixed
+
+- Fixed imported-symbol alias collection so explicit import specs like `math:sqrt as root` correctly populate allowed symbols.
+
 ## [0.4.3] - 2026-03-16
 
 ### Added
@@ -138,7 +160,8 @@
 - Added unit and integration CLI tests for error handling and flag behavior.
 - Expanded README with API surface, exception handling, execution-mode defaults, internal module split notes, and persistent subprocess lifecycle examples.
 
-[Unreleased]: https://github.com/Darth-Demetrius/python-sub-REPL/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/Darth-Demetrius/python-sub-REPL/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.5.0
 [0.4.3]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.4.3
 [0.4.2]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.4.2
 [0.4.1]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.4.1

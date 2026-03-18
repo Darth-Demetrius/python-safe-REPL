@@ -12,6 +12,7 @@ from .process_protocol import (
     OP_EXEC,
     OP_RESET,
     WorkerResponse,
+    encode_user_vars_for_ipc,
     open_response_payload,
 )
 from .process_worker import (
@@ -60,7 +61,7 @@ class WorkerSession:
             target=run_persistent_isolated_worker,
             kwargs={
                 "conn": child_conn,
-                "initial_user_vars": dict(self._user_vars),
+                "initial_user_vars": encode_user_vars_for_ipc(dict(self._user_vars)),
                 "perms": self._perms,
             },
             daemon=True
@@ -130,7 +131,12 @@ class WorkerSession:
         assert self._process is not None
 
         try:
-            self._parent_conn.send(command)
+            encoded_command = dict(command)
+            user_vars = encoded_command.get("user_vars")
+            if isinstance(user_vars, dict):
+                encoded_command["user_vars"] = encode_user_vars_for_ipc(user_vars)
+
+            self._parent_conn.send(encoded_command)
             if self._parent_conn.poll(self._perms.timeout_seconds):
                 return open_response_payload(self._parent_conn.recv())
             self.finalize(terminate=True)

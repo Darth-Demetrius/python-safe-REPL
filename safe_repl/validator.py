@@ -149,7 +149,7 @@ def validate_ast(
     collected = _collect_defined_and_assigned_names(tree)
     local_allowed = allowed_names | collected
 
-    allowed_node_tuple = perms.allowed_node_tuple
+    allowed_node_tuple = perms.allowed_nodes_tuple
     handlers_get = _handlers.get
     iter_children = ast.iter_child_nodes
 

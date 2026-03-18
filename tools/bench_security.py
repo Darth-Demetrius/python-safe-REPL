@@ -46,7 +46,7 @@ def _bench_imports(iterations: int) -> dict[str, float]:
 
 
 def _bench_permissions(iterations: int) -> float:
-    return _time_call(lambda: Permissions(base_perms=PermissionLevel.LIMITED), iterations) / iterations
+    return _time_call(lambda: Permissions(perm_level=PermissionLevel.LIMITED), iterations) / iterations
 
 
 def _make_trees() -> dict[str, ast.AST]:
@@ -61,7 +61,7 @@ def _make_trees() -> dict[str, ast.AST]:
 
 
 def _bench_validation(iterations: int) -> dict[str, float]:
-    perms = Permissions(base_perms=PermissionLevel.UNSUPERVISED)
+    perms = Permissions(perm_level=PermissionLevel.UNSUPERVISED)
     user_vars = {"obj": object(), "arr": [], "a": [], "x": 0}
     trees = _make_trees()
     results: dict[str, float] = {}

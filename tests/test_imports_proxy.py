@@ -7,7 +7,7 @@ from safe_repl import PermissionLevel, Permissions, SafeSession
 
 def test_module_alias_via_proxy_works_in_worker() -> None:
     # Use module-style import spec (as a list of spec strings)
-    perms = Permissions(base_perms=PermissionLevel.LIMITED, imports=["json:dumps as dumps"])
+    perms = Permissions(perm_level=PermissionLevel.LIMITED, imports=["json:dumps as dumps"])
     session = SafeSession(perms)
 
     # Should serialize into the spawn worker and execute with the imported function.

@@ -15,6 +15,9 @@ from .process_protocol import (
     OP_RESET,
     WorkerCommand,
     WorkerResponse,
+    decode_user_vars_from_ipc,
+    encode_response_value,
+    encode_user_vars_for_ipc,
     open_command_payload,
 )
 
@@ -23,7 +26,6 @@ __all__ = [
     "execute_worker_code",
     "send_worker_response",
     "run_worker_command",
-    "resolve_imports_for_worker",
     "run_persistent_isolated_worker",
 ]
 
@@ -54,8 +56,8 @@ def build_worker_response(
 
     return {
         "ok": ok,
-        "result": result,
-        "user_vars": dict(user_vars),
+        "result": encode_response_value(result),
+        "user_vars": encode_user_vars_for_ipc(user_vars),
         "output": output,
         "exception_type": exception_type,
         "message": message,
@@ -75,7 +77,7 @@ def execute_worker_code(
     with contextlib.redirect_stdout(output_buffer), contextlib.redirect_stderr(output_buffer):
         try:
             result = safe_exec(code, local_user_vars, perms=perms)
-        except BaseException as err:  # noqa: BLE001
+        except BaseException as err:
             exc = err
 
     output = output_buffer.getvalue() or None
@@ -88,7 +90,7 @@ def send_worker_response(conn: Connection, response: WorkerResponse) -> bool:
     try:
         conn.send(response)
         return True
-    except Exception as send_exc:  # noqa: BLE001
+    except Exception as send_exc:
         transport_error = build_worker_response(
             user_vars={},
             exception_type="RuntimeError",
@@ -97,7 +99,7 @@ def send_worker_response(conn: Connection, response: WorkerResponse) -> bool:
         try:
             conn.send(transport_error)
             return True
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
 
 
@@ -136,34 +138,6 @@ def run_worker_command(
     )
 
 
-def resolve_imports_for_worker(perms: Permissions) -> None:
-    """Resolve imports in worker and inject them into child execution builtins."""
-    builtins_scope = perms.globals_dict.get("__builtins__")
-    if not isinstance(builtins_scope, dict):
-        return
-
-    blocked_symbols = perms.blocked_symbols
-    for spec in perms.imports:
-        if not isinstance(spec["module"], tuple) or len(spec["module"]) != 2:
-            continue
-        module_name, module_alias = spec["module"]
-        module = __import__(module_name)
-
-        if not spec["names"]:
-            builtins_scope[module_alias] = module
-            continue
-
-        if spec["names"][0][0] == "*":
-            for attr_name, import_alias in spec["names"][1:]:
-                if attr_name not in blocked_symbols:
-                    builtins_scope[import_alias] = getattr(module, attr_name)
-            continue
-
-        for attr_name, import_alias in spec["names"]:
-            if attr_name not in blocked_symbols:
-                builtins_scope[import_alias] = getattr(module, attr_name)
-
-
 def run_persistent_isolated_worker(
     conn: Connection,
     *,
@@ -179,8 +153,8 @@ def run_persistent_isolated_worker(
             mem_limit = min(perms.memory_limit_bytes, hard_limit)
         resource.setrlimit(resource.RLIMIT_AS, (mem_limit, mem_limit))
 
-    local_user_vars = dict(initial_user_vars)
-    resolve_imports_for_worker(perms)
+    local_user_vars = decode_user_vars_from_ipc(initial_user_vars)
+    perms.build_globals()
 
     while True:
         try:
