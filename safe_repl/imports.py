@@ -138,12 +138,9 @@ def collect_import_symbols(imports: NormalizedImportSpec) -> set[str]:
     names/aliases that the import specs introduce into scope.
     """
     result: set[str] = set()
-    for (_module_name, module_alias), names in imports.items():
-        if not names:
-            # If no names are specified, the module alias (or name) is the only symbol added.
-            if module_alias:
-                result.add(module_alias)
-            continue
+    for (module_name, module_alias), names in imports.items():
+        if module_alias != module_name:
+            result.add(module_alias)
 
         for _import_name, import_alias in names:
             result.add(import_alias)

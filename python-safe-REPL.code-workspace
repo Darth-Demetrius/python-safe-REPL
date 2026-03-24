@@ -5,6 +5,8 @@
         }
     ],
     "settings": {
+        "editor.detectIndentation": false,
+        "editor.insertSpaces": true,
         "chat.tools.terminal.autoApprove": {
             "timeout": true,
             "true": true,

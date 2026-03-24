@@ -38,19 +38,18 @@ class PermissionLevel(IntEnum):
     - Higher levels include all permissions of lower levels, plus additional capabilities.
     - The last enum member (highest numeric value) should always be the
       LEAST RESTRICTIVE level.
-    - Ordering allows numeric comparisons, for example:
-      `level >= PermissionLevel.LIMITED` means
-      "at least limited permissions".
+        - Ordering allows numeric comparisons, for example:
+            `level >= PermissionLevel.CONTROLLED` means
+            "at least controlled permissions".
 
     These invariants allow adding/changing permission levels without refactoring
     fallback/default or comparison logic.
     """
 
     NONE = 0
-    MINIMUM = 1
-    LIMITED = 2
-    PERMISSIVE = 3
-    UNSUPERVISED = 4
+    RESTRICTED = 1
+    CONTROLLED = 2
+    TRUSTED    = 3
 
     @classmethod
     def _missing_(cls, value: object) -> "PermissionLevel | None":
@@ -144,14 +143,14 @@ class Permissions:
         self.blocked_symbols = DEFAULT_BLOCKED_SYMBOLS[self.level] | (block_symbols or set())
         self.allowed_symbols = DEFAULT_ALLOWED_SYMBOLS[self.level] | (allow_symbols or set())
         self.allowed_symbols |= self.imported_symbols  # Allow imported symbols by default.
-        if self.level >= PermissionLevel.PERMISSIVE:
+        if self.level >= PermissionLevel.CONTROLLED:
             self.allowed_symbols.add("__build_class__")
         self.allowed_symbols -= self.blocked_symbols  # Block overrides allow.
 
         self.can_save = (
             can_save
             if can_save is not None
-            else (self.level >= PermissionLevel.PERMISSIVE)
+            else (self.level >= PermissionLevel.CONTROLLED)
         )
         self.timeout_seconds = (
             DEFAULT_TIMEOUT_SECONDS[self.level]
@@ -177,8 +176,9 @@ class Permissions:
         }
         for (module_name, module_alias), names in self.imports.items():
             module = importlib.import_module(module_name)
-            if not names:
+            if module_alias in self.allowed_symbols:
                 self.globals_dict[module_alias] = module
+            if not names:
                 continue
             for import_name, import_alias in names:
                 if import_alias in self.allowed_symbols:

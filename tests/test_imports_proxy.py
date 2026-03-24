@@ -7,9 +7,18 @@ from safe_repl import PermissionLevel, Permissions, SafeSession
 
 def test_module_alias_via_proxy_works_in_worker() -> None:
     # Use module-style import spec (as a list of spec strings)
-    perms = Permissions(perm_level=PermissionLevel.LIMITED, imports=["json:dumps as dumps"])
+    perms = Permissions(perm_level=PermissionLevel.CONTROLLED, imports=["json:dumps as dumps"])
     session = SafeSession(perms)
 
     # Should serialize into the spawn worker and execute with the imported function.
     result = session.exec("dumps({'x': 1})")
     assert result == json.dumps({"x": 1})
+
+
+def test_explicit_module_alias_with_symbol_still_available_in_worker() -> None:
+    perms = Permissions(perm_level=PermissionLevel.CONTROLLED, imports=["math as m:sqrt"])
+    session = SafeSession(perms)
+
+    # Explicit symbol imports should not drop an explicit module alias.
+    result = session.exec("m.sqrt(25)")
+    assert result == 5.0

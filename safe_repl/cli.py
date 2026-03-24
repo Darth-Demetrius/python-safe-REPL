@@ -13,12 +13,11 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Safe REPL with restricted execution context",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  %(prog)s                               # Limited permission level (default)
-  %(prog)s --level MINIMUM               # Restrict to arithmetic only
-  %(prog)s --level PERMISSIVE            # Allow classes and exception handling
-  %(prog)s --level UNSUPERVISED          # Allow imports and most builtins
-  %(prog)s --allow-functions map filter  # Add functions to default set
-  %(prog)s --list-functions              # Show allowed functions and exit
+    %(prog)s                               # Controlled permission level (default)
+    %(prog)s --level RESTRICTED            # Expression-only execution without loops/functions
+    %(prog)s --level TRUSTED               # Allow imports and broader Python features
+    %(prog)s --allow-functions map filter  # Add functions to default set
+    %(prog)s --list-functions              # Show allowed functions and exit
 
     REPL commands:
         :help <command>                        # Show help for one command
@@ -30,8 +29,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument(
         "--level",
-        default="LIMITED",
-        help="Permission level: MINIMUM/0, LIMITED/1 (default), PERMISSIVE/2, UNSUPERVISED/3",
+        default="CONTROLLED",
+        help="Permission level: RESTRICTED/1, CONTROLLED/2 (default), TRUSTED/3",
     )
     parser.add_argument(
         "--import",

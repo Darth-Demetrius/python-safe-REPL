@@ -6,6 +6,8 @@ Safe Python REPL with tiered permission levels for restricted code execution.
 
 `safe-repl` provides a process-isolated Python REPL and API for executing untrusted code with configurable permission levels, import controls, and resource limits. All execution is process-isolated for safety. The public API is re-exported from focused internal modules.
 
+The repository also includes `respy_repl`, a RestrictedPython-based variant designed for in-process execution scenarios (for example, async bot command handlers) where process-based isolation is not required.
+
 ## Public API
 
 - `PermissionLevel`, `Permissions`, `SafeSession`, `CommandRegistry`
@@ -36,7 +38,7 @@ import io
 import contextlib
 
 perms = Permissions(
-    perm_level=PermissionLevel.LIMITED,
+    perm_level=PermissionLevel.CONTROLLED,
     imports=["numpy:sum", "math:sqrt as root"],
 )
 
@@ -52,7 +54,7 @@ print(captured)  # '6.0'
 
 ## API Reference
 
-- `PermissionLevel`: Enum of permission levels: `NONE`, `MINIMUM`, `LIMITED`, `PERMISSIVE`, `UNSUPERVISED`. Invalid values warn and default to `NONE`.
+- `PermissionLevel`: Enum of permission levels: `NONE`, `RESTRICTED`, `CONTROLLED`, `TRUSTED`. Invalid values warn and default to `NONE`.
 - `Permissions`: Policy object for execution and REPL. Supports per-instance overrides for `timeout_seconds` and `memory_limit_bytes` via `set_limits()`.
 - `SafeSession`: Stateful executor that keeps `user_vars` across calls. All execution is process-isolated.
 - `CommandRegistry`: Decorator-based registry for custom REPL commands.
@@ -63,10 +65,9 @@ print(captured)  # '6.0'
 
 ### Permission-level attribute access
 
-- `MINIMUM`: Attribute access is blocked.
-- `LIMITED`: Attribute access is allowed on literals and imported symbols (e.g. `'abc'.split()`, or `np.sqrt(9)` after `numpy as np`).
-- `PERMISSIVE`: Also allows attributes on in-scope user names.
-- `UNSUPERVISED`: Broad attribute access, except private/dunder attributes are still blocked.
+- `RESTRICTED`: Attribute access is blocked.
+- `CONTROLLED`: Attribute access is allowed on literals and imported symbols (e.g. `'abc'.split()`, or `np.sqrt(9)` after `numpy as np`).
+- `TRUSTED`: Also allows attributes on in-scope user names. Private and dunder attributes are still blocked.
 
 ### Pickle round-trip and relaunch
 
@@ -76,7 +77,7 @@ import pickle
 from safe_repl import PermissionLevel, Permissions, SafeSession
 
 session = SafeSession(
-    Permissions(base_perms=PermissionLevel.LIMITED, imports=["math:sqrt as root"]),
+    Permissions(perm_level=PermissionLevel.CONTROLLED, imports=["math:sqrt as root"]),
     user_vars={"x": 25},
 )
 
@@ -107,20 +108,25 @@ Run REPL:
 safe-repl
 # or
 python -m safe_repl
+
+# RestrictedPython variant
+respy-repl
+# or
+python -m respy_repl
 ```
 
 ## Usage Example
 
 ```python
 from safe_repl import PermissionLevel, Permissions, SafeSession
-perms = Permissions(perm_level=PermissionLevel.LIMITED, imports=["math:*"])
+perms = Permissions(perm_level=PermissionLevel.CONTROLLED, imports=["math:*"])
 session = SafeSession(perms)
 print(session.exec("2 + 3 * 4"))  # 14
 ```
 
 ## CLI Arguments
 
-- `--level LEVEL` — Permission level: MINIMUM/0, LIMITED/1 (default), PERMISSIVE/2, UNSUPERVISED/3
+- `--level LEVEL` — Permission level: RESTRICTED/1, CONTROLLED/2 (default), TRUSTED/3
 - `--import SPEC` — Import module/spec (e.g. `math:*`, disables default if used)
 - `--allow-functions ...` / `--block-functions ...` — Add/remove builtins
 - `--allow-nodes ...` / `--block-nodes ...` — Add/remove AST nodes
@@ -145,7 +151,7 @@ from safe_repl.repl_command_registry import CommandRegistry
 registry = CommandRegistry()
 @registry.command("ping", help_text="Use '{0}ping' to print pong.")
 def ping_command(_args, _session): print("pong")
-session = SafeSession(Permissions(perm_level=PermissionLevel.LIMITED), repl_commands=registry)
+session = SafeSession(Permissions(perm_level=PermissionLevel.CONTROLLED), repl_commands=registry)
 session.repl()
 ```
 
@@ -160,19 +166,17 @@ session.repl()
 
 ## TODO
 
-- Fix imports not adding module aliases for explicit import specs (e.g. `numpy as np: sum`).
-- Fix perm levels 2 & 3 not allowing attributes on imported symbols.
 - Add ability to remove items from blocklists.
 - Add ability to create custom REPL commands during runtime via session API.
 - Use `colorama` or similar for colored CLI output.
 - Graceful shutdown handling for subprocess workers (for example on `KeyboardInterrupt`).
-- Replace denylist-heavy `UNSUPERVISED` policy behavior with a capability/profile-based model.
 
 ## Sandbox upgrade paths
 
 Current process isolation improves containment, but stronger boundaries can be added in layers.
 The most promising near-term options are Linux namespaces and microVM execution.
 
+- Replace denylist-heavy `TRUSTED` policy behavior with a capability/profile-based model.
 - Linux namespaces (recommended next step)
   - Run workers in isolated `user`, `pid`, `mount`, and `net` namespaces.
   - Combine with `no_new_privs`, read-only mounts, and restricted `/tmp`.

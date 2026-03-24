@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-03-23
+
+### Added
+
+- Added a new `respy_repl` package implementing a RestrictedPython-based execution path with permission tiers, guarded imports, session orchestration, command registry, and CLI entry points.
+- Added comprehensive ResPy coverage in `tests/test_respy.py`, including async execution and policy/security behavior.
+- Added package metadata for shipping the new package and CLI script (`respy-repl`).
+
+### Changed
+
+- Renamed the public permission tiers to `RESTRICTED`, `CONTROLLED`, and `TRUSTED`, and aligned the CLI/default policy tables with the new three-level model.
+- Refactored the ResPy engine/policy implementation to reduce redundant runtime guards and rely on RestrictedPython-native compile-time protections where appropriate.
+
+### Fixed
+
+- Fixed module alias exposure for explicit import specs so aliases like `math as m:sqrt` are available at runtime.
+- Fixed policy-table drift after the level-model change so validator/runtime checks and tests now agree on the active AST/symbol capabilities.
+
 ## [0.5.0] - 2026-03-17
 
 ### Added
@@ -160,7 +178,8 @@
 - Added unit and integration CLI tests for error handling and flag behavior.
 - Expanded README with API surface, exception handling, execution-mode defaults, internal module split notes, and persistent subprocess lifecycle examples.
 
-[Unreleased]: https://github.com/Darth-Demetrius/python-sub-REPL/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Darth-Demetrius/python-sub-REPL/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.6.0
 [0.5.0]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.5.0
 [0.4.3]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.4.3
 [0.4.2]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.4.2

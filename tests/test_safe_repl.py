@@ -57,7 +57,7 @@ def activate(level: PermissionLevel, imports: list[str] | None = None) -> Permis
 
 
 def run_limited(code: str, variables: dict[str, object]) -> object | None:
-    perms = activate(PermissionLevel.LIMITED, ["math:*"])
+    perms = activate(PermissionLevel.CONTROLLED, ["math:*"])
     session = SafeSession(perms=perms, user_vars=variables)
     try:
         return session.exec(code)
@@ -100,7 +100,7 @@ def test_user_defined_function_persists_between_calls() -> None:
 
 
 def test_safe_session_exec_persists_state() -> None:
-    perms = activate(PermissionLevel.LIMITED)
+    perms = activate(PermissionLevel.CONTROLLED)
     session = SafeSession(perms)
 
     assert session.exec("x = 10") is None
@@ -109,7 +109,7 @@ def test_safe_session_exec_persists_state() -> None:
 
 
 def test_safe_session_reset_clears_user_vars() -> None:
-    perms = activate(PermissionLevel.LIMITED)
+    perms = activate(PermissionLevel.CONTROLLED)
     session = SafeSession(perms)
 
     session.exec("x = 10")
@@ -119,19 +119,19 @@ def test_safe_session_reset_clears_user_vars() -> None:
 
 
 def test_safe_session_constructor_defaults() -> None:
-    session = SafeSession(Permissions(perm_level=PermissionLevel.MINIMUM))
-    assert session.perms.level == PermissionLevel.MINIMUM
+    session = SafeSession(Permissions(perm_level=PermissionLevel.RESTRICTED))
+    assert session.perms.level == PermissionLevel.RESTRICTED
     assert session.user_vars == {}
 
 
 def test_safe_session_constructor_with_imports() -> None:
-    session = SafeSession(Permissions(perm_level=PermissionLevel.LIMITED, imports=["math:sqrt"]))
+    session = SafeSession(Permissions(perm_level=PermissionLevel.CONTROLLED, imports=["math:sqrt"]))
     assert session.exec("sqrt(9)") == 3.0
 
 
 def test_permissions_pickle_round_trip_preserves_configuration() -> None:
     original = Permissions(
-        perm_level=PermissionLevel.PERMISSIVE,
+        perm_level=PermissionLevel.TRUSTED,
         allow_symbols={"my_symbol"},
         block_symbols={"min"},
         allow_nodes={ast.Try},
@@ -155,7 +155,7 @@ def test_permissions_pickle_round_trip_preserves_configuration() -> None:
 
 def test_permissions_pickle_round_trip_preserves_can_save_override() -> None:
     original = Permissions(
-        perm_level=PermissionLevel.PERMISSIVE,
+        perm_level=PermissionLevel.TRUSTED,
         can_save=False,
     )
 
@@ -169,7 +169,7 @@ def test_permissions_pickle_round_trip_preserves_can_save_override() -> None:
 def test_safe_session_pickle_round_trip_supports_relaunch() -> None:
     session = SafeSession(
         Permissions(
-            perm_level=PermissionLevel.LIMITED,
+            perm_level=PermissionLevel.CONTROLLED,
             imports=["math:sqrt as root"],
         ),
         user_vars={"x": 9},
@@ -192,7 +192,7 @@ def test_safe_session_pickle_round_trip_supports_relaunch() -> None:
 
 def test_safe_session_relaunch_data_round_trip() -> None:
     session = SafeSession(
-        Permissions(perm_level=PermissionLevel.LIMITED, imports=["math:sqrt as root"]),
+        Permissions(perm_level=PermissionLevel.CONTROLLED, imports=["math:sqrt as root"]),
         user_vars={"x": 16},
         command_char="#",
     )
@@ -212,7 +212,7 @@ def test_safe_session_relaunch_data_round_trip() -> None:
 
 def test_safe_session_pickle_round_trip_preserves_user_defined_function() -> None:
     session = SafeSession(
-        Permissions(perm_level=PermissionLevel.LIMITED),
+        Permissions(perm_level=PermissionLevel.CONTROLLED),
         user_vars={"abc": (lambda value: value + 1)},
     )
 
@@ -224,7 +224,7 @@ def test_safe_session_pickle_round_trip_preserves_user_defined_function() -> Non
 
 def test_safe_session_from_cli_args_uses_default_math_imports() -> None:
     args = argparse.Namespace(
-        level="LIMITED",
+        level="CONTROLLED",
         imports=None,
         allow_functions=None,
         block_functions=None,
@@ -239,7 +239,7 @@ def test_safe_session_from_cli_args_uses_default_math_imports() -> None:
 
 def test_safe_session_from_cli_args_with_explicit_import() -> None:
     args = argparse.Namespace(
-        level="LIMITED",
+        level="CONTROLLED",
         imports=["json:dumps as dumps"],
         allow_functions=None,
         block_functions=None,
@@ -254,7 +254,7 @@ def test_safe_session_from_cli_args_with_explicit_import() -> None:
 
 def test_safe_session_from_cli_args_empty_import_disables_default_math() -> None:
     args = argparse.Namespace(
-        level="LIMITED",
+        level="CONTROLLED",
         imports=[""],
         allow_functions=None,
         block_functions=None,
@@ -264,7 +264,7 @@ def test_safe_session_from_cli_args_empty_import_disables_default_math() -> None
         list_nodes=False,
     )
     session = SafeSession.from_cli_args(args)
-    with pytest.raises(ValueError, match="Function 'sqrt' is not allowed"):
+    with pytest.raises(NameError, match="name 'sqrt' is not defined"):
         session.exec("sqrt(16)")
 
 
@@ -274,6 +274,7 @@ def test_safe_session_from_cli_args_empty_import_disables_default_math() -> None
         ("open('x.txt')", "is not allowed"),
         ("math._floor(3.7)", "Private methods are not allowed"),
         ("'abc'.__class__", "Private attributes are not allowed"),
+        ("_hidden = 1", "Private and dunder names are not allowed"),
     ],
 )
 def test_limited_blocks_unsafe_calls_and_attributes(code: str, error: str) -> None:
@@ -286,7 +287,7 @@ def test_star_import_does_not_put_module_in_scope() -> None:
     # math:* expands public names directly; the module object itself is not
     # injected, so math.sqrt-style attribute access must be blocked.
     variables: dict[str, object] = {}
-    with pytest.raises(ValueError, match="Attribute access not allowed"):
+    with pytest.raises(NameError, match="name 'math' is not defined"):
         run_limited("math.sqrt(16)", variables)
 
 
@@ -316,14 +317,14 @@ def test_limited_blocks_subscript_assignment_for_unknown_variable() -> None:
 
 def test_minimum_blocks_all_attribute_access() -> None:
     variables: dict[str, object] = {}
-    perms = activate(PermissionLevel.MINIMUM)
+    perms = activate(PermissionLevel.RESTRICTED)
     with pytest.raises(ValueError, match="Attribute access not allowed"):
         safe_exec("'hello'.upper()", variables, perms=perms)
 
 
 def test_minimum_blocks_unpacking_but_allows_simple_assignment() -> None:
     variables: dict[str, object] = {}
-    perms = activate(PermissionLevel.MINIMUM)
+    perms = activate(PermissionLevel.RESTRICTED)
     with pytest.raises(ValueError, match="Unpacking assignment is not allowed"):
         safe_exec("a, b = 1, 2", variables, perms=perms)
 
@@ -333,7 +334,7 @@ def test_minimum_blocks_unpacking_but_allows_simple_assignment() -> None:
 
 def test_limited_enforces_timeout() -> None:
     variables: dict[str, object] = {}
-    perms = activate(PermissionLevel.LIMITED)
+    perms = activate(PermissionLevel.CONTROLLED)
     perms.set_limits(timeout_seconds=0.01)
     assert perms.timeout_seconds == 0.01
     with pytest.raises(TimeoutError, match="Execution timed out"):
@@ -341,7 +342,7 @@ def test_limited_enforces_timeout() -> None:
 
 
 def test_limited_enforces_memory_limit() -> None:
-    perms = activate(PermissionLevel.LIMITED)
+    perms = activate(PermissionLevel.CONTROLLED)
     perms.set_limits(memory_limit_bytes=64 * 1024)
     assert perms.memory_limit_bytes == 64 * 1024
     session = SafeSession(perms)
@@ -354,34 +355,34 @@ def test_limited_enforces_memory_limit() -> None:
 
 def test_limited_allows_attributes_on_literals() -> None:
     variables: dict[str, object] = {}
-    perms = activate(PermissionLevel.LIMITED)
+    perms = activate(PermissionLevel.CONTROLLED)
     assert safe_exec("'hello'.upper()", variables, perms=perms) == "HELLO"
     assert safe_exec("[1, 2, 3].count(2)", variables, perms=perms) == 1
 
 
 def test_limited_blocks_attributes_on_user_variables() -> None:
     variables: dict[str, object] = {"msg": "hello"}
-    perms = activate(PermissionLevel.LIMITED)
+    perms = activate(PermissionLevel.CONTROLLED)
     with pytest.raises(ValueError, match="Attribute access not allowed"):
         safe_exec("msg.upper()", variables, perms=perms)
 
 
 def test_permissive_allows_attributes_on_user_variables() -> None:
     variables: dict[str, object] = {"msg": "hello"}
-    perms = activate(PermissionLevel.PERMISSIVE)
+    perms = activate(PermissionLevel.TRUSTED)
     assert safe_exec("msg.upper()", variables, perms=perms) == "HELLO"
 
 
 def test_permissive_allows_attributes_on_locals_defined_in_snippet() -> None:
     variables: dict[str, object] = {}
-    perms = activate(PermissionLevel.PERMISSIVE)
+    perms = activate(PermissionLevel.TRUSTED)
     assert safe_exec("msg = 'hello'", variables, perms=perms) is None
     assert safe_exec("msg.upper()", variables, perms=perms) == "HELLO"
 
 
 def test_limited_allows_function_definition() -> None:
     variables: dict[str, object] = {}
-    perms = activate(PermissionLevel.LIMITED)
+    perms = activate(PermissionLevel.CONTROLLED)
     safe_exec("def add(a, b):\n    return a + b", variables, perms=perms)
     assert safe_exec("add(2, 3)", variables, perms=perms) == 5
 
@@ -393,31 +394,31 @@ def test_limited_allows_function_definition() -> None:
         "try:\n    x = 1\nexcept Exception:\n    x = 2",
     ],
 )
-def test_limited_blocks_class_and_exception_handling(code: str) -> None:
+def test_restricted_blocks_class_and_exception_handling(code: str) -> None:
     variables: dict[str, object] = {}
-    perms = activate(PermissionLevel.LIMITED)
+    perms = activate(PermissionLevel.RESTRICTED)
     with pytest.raises(ValueError, match="Unsupported syntax"):
         safe_exec(code, variables, perms=perms)
 
 
-def test_permissive_allows_class_and_try() -> None:
+def test_controlled_allows_class_and_try() -> None:
     variables: dict[str, object] = {}
-    perms = activate(PermissionLevel.PERMISSIVE)
+    perms = activate(PermissionLevel.CONTROLLED)
     safe_exec("class A:\n    pass\n\ntry:\n    y = 1\nexcept Exception:\n    y = 2", variables, perms=perms)
     assert safe_exec("y", variables, perms=perms) == 1
     assert "A" in variables
 
 
-def test_permissive_blocks_imports() -> None:
+def test_controlled_blocks_imports() -> None:
     variables: dict[str, object] = {}
-    perms = activate(PermissionLevel.PERMISSIVE)
+    perms = activate(PermissionLevel.CONTROLLED)
     with pytest.raises(ValueError, match="Unsupported syntax"):
         safe_exec("import math", variables, perms=perms)
 
 
 def test_permissive_allows_global_and_nonlocal() -> None:
     variables: dict[str, object] = {}
-    perms = activate(PermissionLevel.PERMISSIVE)
+    perms = activate(PermissionLevel.TRUSTED)
     safe_exec(
         "x = 0\ndef outer():\n    y = 1\n    def inner():\n        nonlocal y\n        global x\n        y = 2\n        x = 3\n    inner()\n    return y",
         variables,
@@ -429,7 +430,7 @@ def test_permissive_allows_global_and_nonlocal() -> None:
 
 def test_unsupervised_allows_imports_and_from_import() -> None:
     variables: dict[str, object] = {}
-    perms = activate(PermissionLevel.UNSUPERVISED)
+    perms = activate(PermissionLevel.TRUSTED)
     safe_exec("import math", variables, perms=perms)
     safe_exec("from math import sqrt", variables, perms=perms)
     assert safe_exec("math.sqrt(9)", variables, perms=perms) == 3.0
@@ -438,7 +439,7 @@ def test_unsupervised_allows_imports_and_from_import() -> None:
 
 def test_unsupervised_still_blocks_eval() -> None:
     variables: dict[str, object] = {}
-    perms = activate(PermissionLevel.UNSUPERVISED)
+    perms = activate(PermissionLevel.TRUSTED)
     with pytest.raises(ValueError, match="is not allowed"):
         safe_exec("eval('2 + 2')", variables, perms=perms)
 
@@ -457,6 +458,15 @@ def test_parse_import_spec_raises_safe_repl_import_error() -> None:
 def test_parse_import_spec_reports_missing_symbol() -> None:
     with pytest.raises(SafeReplImportError, match="Cannot import attribute"):
         normalize_validate_import("math:definitely_not_a_real_symbol_xyz")
+
+
+def test_explicit_module_alias_with_symbol_is_collected_for_validation() -> None:
+    perms = Permissions(
+        perm_level=PermissionLevel.CONTROLLED,
+        imports=["math as m:sqrt"],
+    )
+
+    assert "m" in perms.imported_symbols
 
 
 @pytest.mark.parametrize(
@@ -484,7 +494,7 @@ def test_typed_exceptions_reexported_from_top_level() -> None:
 
 
 def test_print_user_vars_prints_names_only(capsys: pytest.CaptureFixture[str]) -> None:
-    session = SafeSession(activate(PermissionLevel.LIMITED), user_vars={"b": 2, "a": 1})
+    session = SafeSession(activate(PermissionLevel.CONTROLLED), user_vars={"b": 2, "a": 1})
     session.print_user_vars(include_values=False)
 
     output = capsys.readouterr().out
@@ -492,7 +502,7 @@ def test_print_user_vars_prints_names_only(capsys: pytest.CaptureFixture[str]) -
 
 
 def test_print_user_vars_prints_values(capsys: pytest.CaptureFixture[str]) -> None:
-    session = SafeSession(activate(PermissionLevel.LIMITED), user_vars={"b": 2, "a": 1})
+    session = SafeSession(activate(PermissionLevel.CONTROLLED), user_vars={"b": 2, "a": 1})
     session.print_user_vars()
 
     output = capsys.readouterr().out
@@ -505,7 +515,7 @@ def test_repl_startup_prints_basic_intro_and_help_hint(
     monkeypatch: pytest.MonkeyPatch,
     run_count: int,
 ) -> None:
-    session = SafeSession(activate(PermissionLevel.LIMITED))
+    session = SafeSession(activate(PermissionLevel.CONTROLLED))
     monkeypatch.setattr("builtins.input", lambda _prompt="": "quit")
 
     for _ in range(run_count):
@@ -531,7 +541,7 @@ def test_repl_vars_command_prints_expected_output(
 ) -> None:
     inputs = iter([command, "quit"])
     session = SafeSession(
-        activate(PermissionLevel.LIMITED),
+        activate(PermissionLevel.CONTROLLED),
         user_vars={"a": 1, "b": 2},
     )
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
@@ -565,7 +575,7 @@ def test_repl_runs_injected_custom_command(
 
     inputs = iter([f"{command_char}{command_name}", "quit"])
     session = SafeSession(
-        activate(PermissionLevel.LIMITED),
+        activate(PermissionLevel.CONTROLLED),
         repl_commands=registry,
         command_char=command_char,
     )
@@ -587,7 +597,7 @@ def test_show_help_for_specific_command_uses_current_prefix(
         print("pong")
 
     session = SafeSession(
-        activate(PermissionLevel.LIMITED),
+        activate(PermissionLevel.CONTROLLED),
         repl_commands=registry,
         command_char="!",
     )
@@ -611,7 +621,7 @@ def test_show_help_includes_args_description(
         print("pong")
 
     session = SafeSession(
-        activate(PermissionLevel.LIMITED),
+        activate(PermissionLevel.CONTROLLED),
         repl_commands=registry,
         command_char="!",
     )
@@ -631,7 +641,7 @@ def test_show_help_falls_back_when_help_template_is_invalid(
         print("pong")
 
     session = SafeSession(
-        activate(PermissionLevel.LIMITED),
+        activate(PermissionLevel.CONTROLLED),
         repl_commands=registry,
         command_char="!",
     )
@@ -644,7 +654,7 @@ def test_show_help_falls_back_when_help_template_is_invalid(
 def test_builtin_inspection_commands_print_session_details(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    session = SafeSession(activate(PermissionLevel.LIMITED, imports=["math:*"]))
+    session = SafeSession(activate(PermissionLevel.CONTROLLED, imports=["math:*"]))
 
     assert session.command_registry.dispatch("level", session=session) is True
     assert session.command_registry.dispatch("functions", session=session) is True
@@ -652,7 +662,7 @@ def test_builtin_inspection_commands_print_session_details(
     assert session.command_registry.dispatch("imports", session=session) is True
 
     output = capsys.readouterr().out
-    assert "Permission level: limited" in output
+    assert "Permission level: controlled" in output
     assert "Builtins:" in output
     assert "Nodes:" in output
     assert "Imports:" in output
@@ -661,7 +671,7 @@ def test_builtin_inspection_commands_print_session_details(
 def test_builtin_imports_command_prints_none_when_no_imports(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    session = SafeSession(activate(PermissionLevel.LIMITED))
+    session = SafeSession(activate(PermissionLevel.CONTROLLED))
 
     assert session.command_registry.dispatch("imports", session=session) is True
 
@@ -682,7 +692,7 @@ def test_repl_persists_custom_command_char_between_runs(
     active_inputs: list[Iterator[str]] = [iter(["!ping", "quit"])]
 
     session = SafeSession(
-        activate(PermissionLevel.LIMITED),
+        activate(PermissionLevel.CONTROLLED),
         repl_commands=registry,
         command_char="!",
     )
@@ -704,7 +714,7 @@ def test_repl_accepts_scripted_input_for_non_cli_usage(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     inputs = iter(["x = 5", "x * 3", "quit"])
-    session = SafeSession(activate(PermissionLevel.LIMITED))
+    session = SafeSession(activate(PermissionLevel.CONTROLLED))
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
 
     session.repl()
@@ -736,7 +746,7 @@ def test_exec_with_no_worker_output_prints_nothing(
         def reset(self) -> None:
             self._user_vars.clear()
 
-    session = SafeSession(activate(PermissionLevel.LIMITED))
+    session = SafeSession(activate(PermissionLevel.CONTROLLED))
     monkeypatch.setattr("safe_repl.session.WorkerSession", _FakeWorkerSession)
 
     result = session.exec("2 + 5")
@@ -771,7 +781,7 @@ def test_exec_emits_output_before_raising_worker_exception(
         def reset(self) -> None:
             self._user_vars.clear()
 
-    session = SafeSession(activate(PermissionLevel.LIMITED))
+    session = SafeSession(activate(PermissionLevel.CONTROLLED))
     monkeypatch.setattr("safe_repl.session.WorkerSession", _FakeWorkerSession)
 
     with pytest.raises(ValueError, match="boom"):
@@ -784,7 +794,7 @@ def test_repl_uses_builtin_io_when_scripted_input_is_patched(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    session = SafeSession(activate(PermissionLevel.LIMITED))
+    session = SafeSession(activate(PermissionLevel.CONTROLLED))
     monkeypatch.setattr("builtins.input", lambda _prompt="": "quit")
 
     session.repl()
@@ -815,7 +825,7 @@ def test_exec_uses_stdout_for_worker_output(
         def reset(self) -> None:
             self._user_vars.clear()
 
-    session = SafeSession(activate(PermissionLevel.LIMITED))
+    session = SafeSession(activate(PermissionLevel.CONTROLLED))
     monkeypatch.setattr("safe_repl.session.WorkerSession", _FakeWorkerSession)
 
     session.exec("x = 1")
@@ -852,7 +862,7 @@ def test_repl_uses_worker_session(
             self._user_vars.clear()
 
     inputs = iter(["2 + 2", "quit"])
-    session = SafeSession(activate(PermissionLevel.LIMITED))
+    session = SafeSession(activate(PermissionLevel.CONTROLLED))
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
     monkeypatch.setattr("safe_repl.session.WorkerSession", _FakeWorkerSession)
 
@@ -886,7 +896,7 @@ def test_repl_does_not_use_safe_session_exec(
             self._user_vars.clear()
 
     inputs = iter(["3 + 4", "quit"])
-    session = SafeSession(activate(PermissionLevel.LIMITED))
+    session = SafeSession(activate(PermissionLevel.CONTROLLED))
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
     monkeypatch.setattr("safe_repl.session.WorkerSession", _FakeWorkerSession)
     monkeypatch.setattr(
@@ -922,7 +932,7 @@ def test_reset_propagates_to_open_worker_session(
             tracker["reset"] += 1
             self._user_vars.clear()
 
-    session = SafeSession(activate(PermissionLevel.LIMITED), user_vars={"x": 1})
+    session = SafeSession(activate(PermissionLevel.CONTROLLED), user_vars={"x": 1})
     monkeypatch.setattr("safe_repl.session.WorkerSession", _FakeWorkerSession)
     session.open_worker_session()
 
