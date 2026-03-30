@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `respy_repl` print capture so output from nested scopes (for example prints inside user-defined functions), including functions defined in one call and invoked in later calls, is returned in execution output.
+
 ## [0.6.0] - 2026-03-23
 
 ### Added

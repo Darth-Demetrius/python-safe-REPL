@@ -22,6 +22,8 @@ import argparse
 import contextlib
 import io
 from collections.abc import Callable, Mapping
+import pickle
+import cloudpickle
 
 from .engine import ExecResult, exec_restricted
 from .imports import NormalizedImportSpec, normalize_validate_imports
@@ -58,23 +60,35 @@ class SafeSession:
     # Serialisation / relaunch
     # ------------------------------------------------------------------
 
+    _CLOUDPICKLE_MARKER: str = "__respy_cloudpickle__"
+
     def to_relaunch_data(self) -> dict[str, object]:
         """Return a picklable payload re-creating this session.
 
         Only relaunch-safe state is included: permissions, user variables,
         and the command prefix.  Live handles (threads, etc.) are excluded.
 
+        Values that standard ``pickle`` cannot handle are encoded as
+        ``{_CLOUDPICKLE_MARKER: True, "data": bytes}`` so the outer dict
+        stays standard-pickle-safe.
+
         Returns:
             A dict suitable for ``pickle.dumps`` / ``from_relaunch_data``.
         """
-        import cloudpickle
+
         serialisable_vars: dict[str, object] = {}
         for k, v in self.user_vars.items():
             try:
-                cloudpickle.dumps(v)
+                pickle.dumps(v)
                 serialisable_vars[k] = v
             except Exception:
-                pass  # Skip values that can't be serialised.
+                try:
+                    serialisable_vars[k] = {
+                        self._CLOUDPICKLE_MARKER: True,
+                        "data": cloudpickle.dumps(v),
+                    }
+                except Exception:
+                    pass  # Skip values that can't be serialised at all.
 
         return {
             "perms": self.perms.to_relaunch_data(),
@@ -102,7 +116,22 @@ class SafeSession:
         user_vars_raw = payload.get("user_vars", {})
         command_char = payload.get("command_char", ":")
 
-        user_vars = dict(user_vars_raw) if isinstance(user_vars_raw, dict) else {}
+        if isinstance(user_vars_raw, dict):
+            user_vars: dict[str, object] = {}
+            for k, v in user_vars_raw.items():
+                if (
+                    isinstance(v, dict)
+                    and v.get(cls._CLOUDPICKLE_MARKER) is True
+                    and isinstance(v.get("data"), bytes)
+                ):
+                    try:
+                        user_vars[k] = cloudpickle.loads(v["data"])
+                    except Exception:
+                        pass  # Drop values that fail to deserialise.
+                else:
+                    user_vars[k] = v
+        else:
+            user_vars = {}
         command_char = command_char if isinstance(command_char, str) else ":"
 
         return cls(
@@ -307,17 +336,15 @@ class SafeSession:
         """Print user-defined variable names, optionally with their values.
 
         Returns:
-            The rendered string (also printed to stdout).
+            The rendered string.
         """
-        rendered = "  User vars: "
         if not self.user_vars:
-            rendered += "(none)"
-        elif include_values:
-            rendered += "".join(
-                f"\n    {name}={value!r}"
-                for name, value in sorted(self.user_vars.items())
-            )
-        else:
-            rendered += ", ".join(sorted(self.user_vars.keys()))
-        print(rendered)
+            return "User vars: (none)"
+
+        rendered = "User vars:\n"
+        rendered += "\n".join(
+            f"  {name}{' = ' + repr(value) if include_values else ': ' + type(value).__name__}"
+            for name, value in sorted(self.user_vars.items())
+        )
+        #print(rendered)
         return rendered

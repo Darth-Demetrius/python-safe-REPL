@@ -8,6 +8,8 @@ Safe Python REPL with tiered permission levels for restricted code execution.
 
 The repository also includes `respy_repl`, a RestrictedPython-based variant designed for in-process execution scenarios (for example, async bot command handlers) where process-based isolation is not required.
 
+For `respy_repl`, `SafeSession.exec(...)` and `SafeSession.async_exec(...)` return `(result, output)`, where `output` contains captured `print(...)` text from the executed snippet.
+
 ## Public API
 
 - `PermissionLevel`, `Permissions`, `SafeSession`, `CommandRegistry`

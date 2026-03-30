@@ -70,6 +70,23 @@ class TestExecRestricted:
         assert r.ok
         assert "1" in r.output and "2" in r.output and "3" in r.output
 
+    def test_print_in_user_defined_function_is_captured(self):
+        perms = Permissions(PermissionLevel.CONTROLLED)
+        uv = {}
+        code = "def f():\n    print('inside')\nf()"
+        r = exec_restricted(code, uv, perms=perms)
+        assert r.ok
+        assert "inside" in r.output
+
+    def test_print_in_persisted_function_is_captured(self):
+        perms = Permissions(PermissionLevel.CONTROLLED)
+        uv = {}
+        r1 = exec_restricted("def f():\n    print('later')", uv, perms=perms)
+        assert r1.ok
+        r2 = exec_restricted("f()", uv, perms=perms)
+        assert r2.ok
+        assert "later" in r2.output
+
     def test_user_vars_persist(self):
         perms = Permissions(PermissionLevel.CONTROLLED)
         uv = {}
@@ -403,6 +420,21 @@ class TestSafeSession:
         result, output = session.exec('print("hello")')
         assert result is None
         assert "hello" in output
+
+    def test_session_exec_with_print_inside_function(self):
+        perms = Permissions(PermissionLevel.CONTROLLED)
+        session = SafeSession(perms=perms)
+        result, output = session.exec("def f():\n    print('nested')\nf()")
+        assert result is None
+        assert "nested" in output
+
+    def test_session_exec_with_print_inside_persisted_function(self):
+        perms = Permissions(PermissionLevel.CONTROLLED)
+        session = SafeSession(perms=perms)
+        session.exec("def f():\n    print('persisted')")
+        result, output = session.exec("f()")
+        assert result is None
+        assert "persisted" in output
 
     def test_session_vars_persist(self):
         perms = Permissions(PermissionLevel.CONTROLLED)

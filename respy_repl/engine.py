@@ -27,6 +27,7 @@ import ast
 import ctypes
 import threading
 import tracemalloc
+import types
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -170,7 +171,24 @@ def exec_restricted(
     _sys_names = set(glb.keys())  # Track initial system names
     # Pre-populate with existing user variables so functions can access them
     glb.update(user_vars)
-    glb["_print_"] = PrintCollector
+    shared_print_collector = PrintCollector()
+
+    # RestrictedPython calls ``_print_(_getattr_)`` per scope. Reuse one
+    # collector so nested scopes (e.g. inside functions) accumulate output
+    # into the same buffer returned at the end of execution.
+    def _print_factory(_getattr_: object | None = None) -> PrintCollector:
+        if _getattr_ is not None:
+            shared_print_collector._getattr_ = _getattr_  # type: ignore[assignment]
+        return shared_print_collector
+
+    glb["_print_"] = _print_factory
+
+    # Functions persisted from earlier exec() calls keep their original
+    # ``__globals__`` dict. Rebind ``_print_`` there as well so prints from
+    # later calls into those functions flow into this execution's collector.
+    for value in user_vars.values():
+        if isinstance(value, types.FunctionType):
+            value.__globals__["_print_"] = _print_factory
 
     # ------------------------------------------------------------------
     # 4. Apply memory tracking setup
@@ -229,12 +247,10 @@ def exec_restricted(
     # ------------------------------------------------------------------
     # Extract PrintCollector from execution namespace
     captured_output = ""
-    collector_obj = glb.pop("_print", None)
-    if callable(collector_obj):
-        try:
-            captured_output = str(collector_obj())
-        except Exception:
-            captured_output = ""
+    try:
+        captured_output = str(shared_print_collector())
+    except Exception:
+        captured_output = ""
 
     # Extract user-defined variables from glb back to user_vars
     # (skip system names that were added during initialization)

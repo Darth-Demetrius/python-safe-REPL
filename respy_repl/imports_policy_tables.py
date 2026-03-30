@@ -4,18 +4,18 @@ Structure mirrors the original ``safe_repl.imports_policy_tables``:
     DEFAULT_IMPORTS_ALLOW[module][level] = {'*'} | {symbol, ...}
     DEFAULT_IMPORTS_BLOCK[module][level] = {symbol, ...}
 
-Levels are cumulative – the validator collects all rules from level 1 up to
+Levels are cumulative - the validator collects all rules from level 1 up to
 and including the session level.  A ``{'*'}`` in the allow table means "all
 public symbols from this module are allowed at this level."
 
 Block rules at any level override allow rules at the same or lower level.
 
 Threat tiers (same annotation as original):
-    Level 3 block – direct attack surfaces (FFI, code generation, FS import
+    Level 3 block - direct attack surfaces (FFI, code generation, FS import
                     entry-points).
-    Level 2 block – elevated resource-risk surfaces acceptable for personal
+    Level 2 block - elevated resource-risk surfaces acceptable for personal
                     use but not semi-trusted code.
-    Level 1 block – broad anti-DoS constraints.
+    Level 1 block - broad anti-DoS constraints.
 """
 
 DEFAULT_IMPORTS_ALLOW: dict[str, dict[int, set[str]]] = {}

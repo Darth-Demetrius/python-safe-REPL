@@ -1,0 +1,4 @@
+nohup: ignoring input
+python: can't open file '/disks/Storage/Code Workspaces/python-safe-REPL/bot/main.py': [Errno 2] No such file or directory
+nohup: ignoring input
+.venv/bin/python: can't open file '/disks/Storage/Code Workspaces/python-safe-REPL/bot/main.py': [Errno 2] No such file or directory
