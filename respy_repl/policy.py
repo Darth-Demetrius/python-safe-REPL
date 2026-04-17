@@ -96,7 +96,6 @@ class Permissions:
         allow_symbols: Additional built-in names to allow beyond the baseline.
         block_symbols: Names to remove; overrides ``allow_symbols``.
         imports: Import spec strings to resolve (pre-approved by the host).
-        can_save: Whether the session state may be persisted / restored.
         timeout_seconds: Execution timeout; ``None`` disables the limit.
         memory_limit_bytes: RSS cap measured via ``tracemalloc``; ``None``
             disables the limit.
@@ -108,7 +107,6 @@ class Permissions:
     _blocked_symbols: set[str]
     _imports: NormalizedImportSpec
     _imported_symbols: set[str]
-    _can_save: bool
     _timeout_seconds: float | None
     _memory_limit_bytes: int | None
     _restricted_globals: dict[str, object]
@@ -120,7 +118,6 @@ class Permissions:
         allow_symbols: Optional[set[str]] = None,
         block_symbols: Optional[set[str]] = None,
         imports: Optional[list[str]] = None,
-        can_save: Optional[bool] = None,
         timeout_seconds: float | None = ...,   # type: ignore[assignment]
         memory_limit_bytes: int | None = ...,  # type: ignore[assignment]
     ) -> None:
@@ -137,11 +134,6 @@ class Permissions:
         self.blocked_symbols = block_symbols or set()
         self.allowed_symbols -= self.blocked_symbols
 
-        self.can_save = (
-            can_save
-            if can_save is not None
-            else (self.level >= PermissionLevel.CONTROLLED)
-        )
         self.timeout_seconds = (
             DEFAULT_TIMEOUT_SECONDS[self.level]
             if timeout_seconds is ...
@@ -175,6 +167,7 @@ class Permissions:
         )
         from RestrictedPython.Guards import (
             guarded_iter_unpack_sequence,
+            guarded_unpack_sequence,
         )
 
         builtins_map = builtins.__dict__
@@ -204,6 +197,7 @@ class Permissions:
             "_getattr_": default_guarded_getattr,
             "_write_": _write_guard,
             "_inplacevar_": _default_inplacevar,
+            "_unpack_sequence_": guarded_unpack_sequence,
             "_iter_unpack_sequence_": guarded_iter_unpack_sequence,
         }
 
@@ -257,7 +251,6 @@ class Permissions:
             restored.allowed_symbols = set(payload.get("allowed_symbols", []))  # type: ignore[arg-type]
             restored.blocked_symbols = set(payload.get("blocked_symbols", []))  # type: ignore[arg-type]
 
-            restored.can_save = True
             restored.timeout_seconds = None
             restored.memory_limit_bytes = None
             restored.set_limits(
@@ -301,42 +294,35 @@ class Permissions:
         copied._imported_symbols = set(self._imported_symbols)
         copied._allowed_symbols = set(self._allowed_symbols)
         copied._blocked_symbols = set(self._blocked_symbols)
-        copied._can_save = self._can_save
         copied._timeout_seconds = self._timeout_seconds
         copied._memory_limit_bytes = self._memory_limit_bytes
         copied._restricted_globals = dict(self._restricted_globals)
         return copied
 
     @classmethod
-    def permissive_merge(
-        cls,
-        *perms_args: "Permissions",
-        perms_list: Iterable["Permissions"] | None = None,
-    ) -> "Permissions":
+    def permissive_merge(cls, *perms_args: "Permissions") -> "Permissions":
         """Merge multiple permissions using permissive (max) logic."""
-        all_perms = (*perms_args, *(perms_list or ()))
-        if not all_perms:
+        if not perms_args:
             return cls(0)
-        if len(all_perms) == 1:
-            return all_perms[0].__copy__()
+        if len(perms_args) == 1:
+            return perms_args[0]
 
         merged = cls.__new__(cls)
-        merged.level = PermissionLevel(max(p.level for p in all_perms))
-        merged.modified = any(p.modified for p in all_perms)
+        merged.level = PermissionLevel(max(p.level for p in perms_args))
+        merged.modified = any(p.modified for p in perms_args)
 
-        merged.allowed_symbols = set().union(*(p.allowed_symbols for p in all_perms))
-        merged.blocked_symbols = set().intersection(*(p.blocked_symbols for p in all_perms))
+        merged.allowed_symbols = set().union(*(p.allowed_symbols for p in perms_args))
+        merged.blocked_symbols = set().intersection(*(p.blocked_symbols for p in perms_args))
 
-        merged.imports = imports_union(*(p.imports for p in all_perms))
-        merged.imported_symbols = set().union(*(p.imported_symbols for p in all_perms))
+        merged.imports = imports_union(*(p.imports for p in perms_args))
+        merged.imported_symbols = set().union(*(p.imported_symbols for p in perms_args))
 
-        merged.can_save = any(p.can_save for p in all_perms)
         merged.timeout_seconds = None
-        if not any(p.timeout_seconds is None for p in all_perms):
-            merged.timeout_seconds = max(p.timeout_seconds for p in all_perms)  # type: ignore[union-attr]
+        if not any(p.timeout_seconds is None for p in perms_args):
+            merged.timeout_seconds = max(p.timeout_seconds for p in perms_args)  # type: ignore[union-attr]
         merged.memory_limit_bytes = None
-        if not any(p.memory_limit_bytes is None for p in all_perms):
-            merged.memory_limit_bytes = max(p.memory_limit_bytes for p in all_perms)  # type: ignore[union-attr]
+        if not any(p.memory_limit_bytes is None for p in perms_args):
+            merged.memory_limit_bytes = max(p.memory_limit_bytes for p in perms_args)  # type: ignore[union-attr]
 
         merged.build_restricted_globals()
         return merged
@@ -421,15 +407,6 @@ class Permissions:
     @imported_symbols.setter
     def imported_symbols(self, value: set[str]) -> None:
         self._imported_symbols = value
-
-    @property
-    def can_save(self) -> bool:
-        """Whether session state may be persisted."""
-        return self._can_save
-
-    @can_save.setter
-    def can_save(self, value: Any) -> None:
-        self._can_save = bool(value)
 
     @property
     def timeout_seconds(self) -> float | None:

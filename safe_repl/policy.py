@@ -343,6 +343,9 @@ class Permissions:
         """Return integer representation of this permission level."""
         return int(self.level)
 
+    def __bool__(self) -> bool:
+        return bool(self.level)
+
     @classmethod
     def permissive_merge(
         cls,

@@ -21,7 +21,6 @@
 - Git:
   - When prepping a release, update the changelog with the new version and date, and move any unreleased changes into the new version section.
   - Use descriptive commit messages that explain the "what" and "why" of the change.
-  - While I am still in development, I will be making a lot of small commits, even just for refactors.
   - Never mention updating the changelog, README, docs, or tests in the commit message, unless the commit is specifically about updating those things. If the commit includes code changes, just describe the code changes and not the documentation or tests, since those should be updated as part of the code change.
   - Don't update the 'review needed' checklist in the README retroactively. I will always keep it up to date as I make changes, so there is no need to update it after the fact. Just keep it up to date as you make changes.
 - General coding practices:
@@ -30,12 +29,10 @@
   - Always run targeted tests related to the changed code to ensure that everything still works as expected after making changes.
   - After completing changes, provide a summary of the changes made, including any new features, bug fixes, or refactors, and any relevant details about the implementation or design decisions.
 - Backwards compatibility:
-  - This project is still in development and has not been implemented yet, NEVER consider backwards compatibility when making changes.
+  - This project is still in development, DO NOT implement backwards compatibility unless you ask.
   - Allow changes to the API as needed.
-  - If you are concerned about breaking changes, just make the change and fix any breakages that occur. Do not add shims or aliases to preserve the old API.
+  - If you are concerned about breaking changes, just make the change and fix any breakages that occur.
   - If you are _really_ concerned about breaking changes, you can add a comment in the code to explain the change and why it was made, but do not keep old code around as an alias or shim.
-  - NEVER create compatibility shims or aliases during development. If a change breaks something, just fix the breakage.
-  - NEVER add backward compatibility code. If you need to change a function signature, just change all the call sites. Do not keep the old function around as an alias or shim.
   - Remember that this project is still in development and has not been released yet, so there is no need to preserve backwards compatibility. Just make the changes that are needed and fix any breakages that occur.
 - Testing:
   - When writing tests, focus on testing the behavior of the code, not the implementation details.

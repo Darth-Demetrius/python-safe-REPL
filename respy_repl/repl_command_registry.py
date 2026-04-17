@@ -32,20 +32,23 @@ class _RegisteredCommand:
 class CommandRegistry:
     """Registry that binds command names to decorator-registered handlers.
 
-    Command lines are expected with the command prefix already stripped.
+    Command lines are expected with the command prefix still attached.
     Matching is exact (case-sensitive first, then lower-case fallback).
 
     Usage example::
 
-        registry = CommandRegistry()
+        registry = CommandRegistry("!")
 
         @registry.command("greet", help_text="Say hello.")
         def _greet(args, session):
             print(f"Hello, {args or 'world'}!")
     """
+    command_prefix: str
+    _commands_by_name: dict[str, _RegisteredCommand]
 
-    def __init__(self) -> None:
-        self._commands_by_name: dict[str, _RegisteredCommand] = {}
+    def __init__(self, command_prefix: str = ":") -> None:
+        self.command_prefix = command_prefix
+        self._commands_by_name = {}
         self._register_builtin_commands()
 
     def command(
@@ -87,12 +90,12 @@ class CommandRegistry:
     def dispatch(self, line: str, *, session: "SafeSession") -> bool | object:
         """Execute the command whose token is the first word of *line*.
 
-        Returns ``False`` when no matching command is found.
+        Returns ``False`` for prefix mismatch or unknown command
         """
-        if not line.strip():
+        if not line.startswith(self.command_prefix):
             return False
 
-        command_name, _, args = line.partition(" ")
+        command_name, _, args = line.removeprefix(self.command_prefix).partition(" ")
         command_name, args = command_name.strip(), args.strip()
 
         cmd = (
@@ -105,7 +108,7 @@ class CommandRegistry:
         result = cmd.handler(args, session)
         return result if isinstance(result, bool) else True
 
-    def show_help(self, cmd_name: str = "", cmd_char: str = ":") -> None:
+    def show_help(self, cmd_name: str = "") -> None:
         """Print help text for *cmd_name* (defaults to ``help``)."""
         cmd_name = cmd_name.strip() or "help"
         cmd = (
@@ -113,30 +116,30 @@ class CommandRegistry:
             or self._commands_by_name.get(cmd_name.lower())
         )
         if cmd is None:
-            print(f"{cmd_char}{cmd_name} is not a recognised command.")
+            print(f"{self.command_prefix}{cmd_name} is not a recognised command.")
             return
         if not cmd.help_text:
-            print(f"No help available for '{cmd_char}{cmd_name}'.")
+            print(f"No help available for '{self.command_prefix}{cmd_name}'.")
             return
 
         try:
-            print(cmd.help_text.format(cmd_char))
+            print(cmd.help_text.format(self.command_prefix))
         except (IndexError, KeyError, ValueError):
             print(cmd.help_text)
         if cmd.args_desc:
             try:
-                print(f"Args: {cmd.args_desc.format(cmd_char)}")
+                print(f"Args: {cmd.args_desc.format(self.command_prefix)}")
             except (IndexError, KeyError, ValueError):
                 print(f"Args: {cmd.args_desc}")
 
-    def list_commands(self, cmd_char: str = ":", hidden: bool = False) -> None:
+    def list_commands(self, hidden: bool = False) -> None:
         """Print all available (or hidden) commands with one-line descriptions."""
         entries = self.all_help_entries(hidden=hidden)
         if not entries:
             print("Available commands: (none)")
             return
         lines = [
-            f" {name}: {text.format(cmd_char)}"
+            f" {name}: {text.format(self.command_prefix)}"
             for name, text in entries.items()
         ]
         print("Available commands:\n" + "\n".join(lines))
@@ -162,14 +165,14 @@ class CommandRegistry:
             ),
         )
         def _show_help(args: str, session: "SafeSession") -> None:
-            self.show_help(args, cmd_char=session.command_char)
+            self.show_help(args)
 
         @self.command(
             "commands",
             help_text="Lists all available commands.  Format: '{0}<command> <args>'.",
         )
         def _list_commands(args: str, session: "SafeSession") -> None:
-            self.list_commands(cmd_char=session.command_char)
+            self.list_commands()
 
         # Session introspection
         @self.command("level", help_text="Prints the current permission level.")

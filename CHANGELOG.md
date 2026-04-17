@@ -2,9 +2,23 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-16
+
+### Added
+
+- Added rich-response APIs to `respy_repl.SafeSession` (`exec_response(...)` and `async_exec_response(...)`) that return full `ExecResult` payloads with `display_artifacts`.
+- Added automatic matplotlib figure capture in `respy_repl.exec_restricted(...)`: open `matplotlib.pyplot` figures are exported as `image/png` byte artifacts in execution responses.
+- Added `respy_repl.ExecutionTimeoutError`, raised by response-oriented session APIs on timeout and carrying partial text/image outputs generated before timeout.
+- Added `respy_repl.ExecutionMemoryLimitError`, raised by response-oriented session APIs on memory-limit failures and carrying partial text/image outputs generated before failure.
+
+### Deprecated
+
+- Marked `safe_repl` as deprecated legacy code; active development and new execution features now target `respy_repl`.
+
 ### Fixed
 
 - Fixed `respy_repl` print capture so output from nested scopes (for example prints inside user-defined functions), including functions defined in one call and invoked in later calls, is returned in execution output.
+- Fixed `respy_repl` sequence-unpacking assignments so statements like multi-target tuple/list assignment execute without missing RestrictedPython guard errors.
 
 ## [0.6.0] - 2026-03-23
 
@@ -182,7 +196,8 @@
 - Added unit and integration CLI tests for error handling and flag behavior.
 - Expanded README with API surface, exception handling, execution-mode defaults, internal module split notes, and persistent subprocess lifecycle examples.
 
-[Unreleased]: https://github.com/Darth-Demetrius/python-sub-REPL/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/Darth-Demetrius/python-sub-REPL/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.7.0
 [0.6.0]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.6.0
 [0.5.0]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.5.0
 [0.4.3]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.4.3

@@ -9,8 +9,8 @@ supply appropriate implementations of those guards via ``Permissions``.
 Key differences from the original ``safe_exec``
 -------------------------------------------------
 * No subprocess / ``multiprocessing`` required.
-* Returns ``(result, captured_output)`` – Discord-friendly: no stdout
-  side-effects from the exec call.
+* Returns an ``ExecResult`` containing result value, captured text output, and
+    optional rich display artifacts (for example matplotlib PNG images).
 * Timeout is enforced via a ``threading.Timer`` + ``ctypes`` async-exception
   injection into the executing thread.  This is the same technique used by
   production Discord bot toolkits such as Jishaku and discord-ext-menus.
@@ -25,11 +25,13 @@ from __future__ import annotations
 
 import ast
 import ctypes
+import io
+import sys
 import threading
 import tracemalloc
 import types
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterable, Protocol, cast
 
 from RestrictedPython import compile_restricted_exec
 from RestrictedPython.PrintCollector import PrintCollector
@@ -39,12 +41,10 @@ if TYPE_CHECKING:
 
 
 __all__ = [
+    "DisplayArtifact",
     "ExecResult",
     "exec_restricted",
 ]
-
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +58,7 @@ class ExecResult:
     Attributes:
         result: The value of the last expression, or ``None`` for statements.
         output: Captured text from ``print()`` calls within the snippet.
+        display_artifacts: Rich outputs captured from the execution context.
         ok: ``True`` when execution completed without raising an exception.
         exception: The exception if ``ok`` is ``False``, otherwise ``None``.
     """
@@ -65,7 +66,75 @@ class ExecResult:
     result: object | None
     output: str
     ok: bool
+    display_artifacts: list["DisplayArtifact"] = field(default_factory=list)
     exception: BaseException | None = field(default=None)
+
+
+@dataclass
+class DisplayArtifact:
+    """One rich display artifact emitted by executed user code.
+
+    Attributes:
+        mime_type: MIME type of the payload (for example ``image/png``).
+        data: Raw bytes for the artifact payload.
+    """
+
+    mime_type: str
+    data: bytes
+
+
+class _FigureLike(Protocol):
+    """Minimal figure contract needed for PNG export."""
+
+    def savefig(self, buffer: io.BytesIO, *, format: str, bbox_inches: str) -> object:
+        ...
+
+
+class _PyplotLike(Protocol):
+    """Minimal pyplot contract needed for figure discovery and cleanup."""
+
+    def get_fignums(self) -> Iterable[object]:
+        ...
+
+    def figure(self, fig_num: object) -> _FigureLike:
+        ...
+
+    def close(self, figure: _FigureLike) -> object:
+        ...
+
+
+def _collect_matplotlib_artifacts() -> list[DisplayArtifact]:
+    """Capture open matplotlib pyplot figures as PNG artifacts.
+
+    This only activates when ``matplotlib.pyplot`` is already imported by user
+    code in the current process. The function does not import matplotlib.
+    """
+    pyplot_module = sys.modules.get("matplotlib.pyplot")
+    if pyplot_module is None:
+        return []
+
+    pyplot = cast(_PyplotLike, pyplot_module)
+
+    artifacts: list[DisplayArtifact] = []
+
+    try:
+        figure_numbers = list(pyplot.get_fignums())
+    except Exception:
+        return []
+
+    for fig_num in figure_numbers:
+        try:
+            figure = pyplot.figure(fig_num)
+            buffer = io.BytesIO()
+            figure.savefig(buffer, format="png", bbox_inches="tight")
+            image_data = buffer.getvalue()
+            if image_data:
+                artifacts.append(DisplayArtifact(mime_type="image/png", data=image_data))
+            pyplot.close(figure)
+        except Exception:
+            continue
+
+    return artifacts
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +172,7 @@ def exec_restricted(
     code: str,
     user_vars: dict[str, object],
     *,
-    perms: "Permissions",
+    perms: Permissions,
 ) -> ExecResult:
     """Compile, validate, and execute *code* under a ``Permissions`` policy.
 
@@ -162,7 +231,7 @@ def exec_restricted(
     code_obj = compile_result.code
     if code_obj is None:
         # Empty / comment-only source.
-        return ExecResult(result=None, output="", ok=True)
+        return ExecResult(result=None, output="", display_artifacts=[], ok=True)
 
     # ------------------------------------------------------------------
     # 3. Build per-execution globals (shallow-copy + fresh PrintCollector)
@@ -252,6 +321,8 @@ def exec_restricted(
     except Exception:
         captured_output = ""
 
+    display_artifacts = _collect_matplotlib_artifacts()
+
     # Extract user-defined variables from glb back to user_vars
     # (skip system names that were added during initialization)
     for key in list(glb.keys()):
@@ -265,6 +336,7 @@ def exec_restricted(
         return ExecResult(
             result=None,
             output=captured_output,
+            display_artifacts=display_artifacts,
             ok=False,
             exception=TimeoutError(
                 "Execution timed out (thread still running – best-effort)."
@@ -276,6 +348,7 @@ def exec_restricted(
         return ExecResult(
             result=None,
             output=captured_output,
+            display_artifacts=display_artifacts,
             ok=False,
             exception=held_exc,
         )
@@ -288,6 +361,7 @@ def exec_restricted(
                 return ExecResult(
                     result=None,
                     output=captured_output,
+                    display_artifacts=display_artifacts,
                     ok=False,
                     exception=MemoryError(
                         f"Memory limit exceeded "
@@ -302,5 +376,6 @@ def exec_restricted(
     return ExecResult(
         result=result_holder[0],
         output=captured_output,
+        display_artifacts=display_artifacts,
         ok=True,
     )

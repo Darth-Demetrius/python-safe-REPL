@@ -153,19 +153,6 @@ def test_permissions_pickle_round_trip_preserves_configuration() -> None:
     assert restored.allowed_nodes == original.allowed_nodes
 
 
-def test_permissions_pickle_round_trip_preserves_can_save_override() -> None:
-    original = Permissions(
-        perm_level=PermissionLevel.TRUSTED,
-        can_save=False,
-    )
-
-    restored = pickle.loads(pickle.dumps(original))
-
-    assert isinstance(restored, Permissions)
-    # Current implementation restores can_save as True during relaunch.
-    assert restored._can_save is True
-
-
 def test_safe_session_pickle_round_trip_supports_relaunch() -> None:
     session = SafeSession(
         Permissions(

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "safe-repl"
-version = "0.6.0"
+version = "0.7.0"
 description = "Safe REPL with tiered permission levels for restricted Python execution"
 authors = ["Your Name <you@example.com>"]
 readme = "README.md"
@@ -21,24 +21,6 @@ respy-repl = "respy_repl:main"
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.5"
 pytest-asyncio = "^1.3.0"
-
-# these were available in legacy repls. might be helpful to add
-# glfw = "2.2.0"
-# toml = "0.10.2"
-# importlib-metadata = "3.10.1"
-# parso = "0.5.2"
-# pluggy = "0.13.1"
-# typing-extensions = "3.7.4.3"
-# ujson = "1.35"
-# zipp = "3.4.1"
-# jedi = "0.15.2"
-# pyflakes = "2.1.1"
-# rope = "0.18.0"
-# yapf = "0.31.0"
-# matplotlib = "3.4.3"
-# nltk = "3.6.2"
-# numpy = "^1.21.5"
-# scipy = "1.7.3"
 
 [tool.pyright]
 # https://github.com/microsoft/pyright/blob/main/docs/configuration.md

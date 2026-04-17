@@ -15,6 +15,7 @@ These tests cover:
 import asyncio
 import math
 import pickle
+import sys
 from io import StringIO
 
 import pytest
@@ -28,7 +29,7 @@ from respy_repl.imports import (
 )
 from respy_repl.policy import PermissionLevel, Permissions
 from respy_repl.repl_command_registry import CommandRegistry
-from respy_repl.session import SafeSession
+from respy_repl.session import ExecutionMemoryLimitError, ExecutionTimeoutError, SafeSession
 
 
 # =============================================================================
@@ -117,6 +118,44 @@ class TestExecRestricted:
         r = exec_restricted("undefined_var", uv, perms=perms)
         assert not r.ok
         assert isinstance(r.exception, NameError)
+
+    def test_unpacking_assignment_updates_user_vars(self):
+        perms = Permissions(PermissionLevel.CONTROLLED)
+        uv = {}
+        r = exec_restricted("a, b, c = 'a', 'b', 'c'", uv, perms=perms)
+        assert r.ok
+        assert r.result is None
+        assert uv["a"] == "a"
+        assert uv["b"] == "b"
+        assert uv["c"] == "c"
+
+    def test_exec_collects_matplotlib_artifacts_when_available(self, monkeypatch):
+        class _FakeFigure:
+            def savefig(self, buffer, *, format, bbox_inches):
+                assert format == "png"
+                assert bbox_inches == "tight"
+                buffer.write(b"fake-png")
+
+        class _FakePyplot:
+            def get_fignums(self):
+                return [1]
+
+            def figure(self, _fig_num):
+                return _FakeFigure()
+
+            def close(self, _figure):
+                return None
+
+        monkeypatch.setitem(sys.modules, "matplotlib.pyplot", _FakePyplot())
+
+        perms = Permissions(PermissionLevel.CONTROLLED)
+        uv = {}
+        r = exec_restricted("1 + 2", uv, perms=perms)
+
+        assert r.ok
+        assert len(r.display_artifacts) == 1
+        assert r.display_artifacts[0].mime_type == "image/png"
+        assert r.display_artifacts[0].data == b"fake-png"
 
 
 # =============================================================================
@@ -414,6 +453,36 @@ class TestSafeSession:
         assert result == 3
         assert output == ""
 
+    def test_session_exec_response_includes_rich_artifacts(self, monkeypatch):
+        class _FakeFigure:
+            def savefig(self, buffer, *, format, bbox_inches):
+                assert format == "png"
+                assert bbox_inches == "tight"
+                buffer.write(b"session-fake-png")
+
+        class _FakePyplot:
+            def get_fignums(self):
+                return [7]
+
+            def figure(self, _fig_num):
+                return _FakeFigure()
+
+            def close(self, _figure):
+                return None
+
+        monkeypatch.setitem(sys.modules, "matplotlib.pyplot", _FakePyplot())
+
+        perms = Permissions(PermissionLevel.CONTROLLED)
+        session = SafeSession(perms=perms)
+
+        response = session.exec_response("10 + 5")
+
+        assert response.result == 15
+        assert response.output == ""
+        assert len(response.display_artifacts) == 1
+        assert response.display_artifacts[0].mime_type == "image/png"
+        assert response.display_artifacts[0].data == b"session-fake-png"
+
     def test_session_exec_with_print(self):
         perms = Permissions(PermissionLevel.CONTROLLED)
         session = SafeSession(perms=perms)
@@ -449,6 +518,24 @@ class TestSafeSession:
         with pytest.raises(ZeroDivisionError):
             session.exec("1 / 0")
 
+    def test_session_timeout_error_contains_partial_output(self):
+        perms = Permissions(PermissionLevel.CONTROLLED, timeout_seconds=0.1)
+        session = SafeSession(perms=perms)
+
+        with pytest.raises(ExecutionTimeoutError) as timeout_error:
+            session.exec_response("print('begin')\nwhile True: pass")
+
+        assert "begin" in timeout_error.value.output
+
+    def test_session_memory_limit_error_contains_partial_output(self):
+        perms = Permissions(PermissionLevel.CONTROLLED, memory_limit_bytes=1024 * 32)
+        session = SafeSession(perms=perms)
+
+        with pytest.raises(ExecutionMemoryLimitError) as memory_error:
+            session.exec_response("print('before mem fail')\nblob = [0] * (1024 * 1024)")
+
+        assert "before mem fail" in memory_error.value.output
+
     def test_session_reset_clears_vars(self):
         perms = Permissions(PermissionLevel.CONTROLLED)
         session = SafeSession(perms=perms)
@@ -459,8 +546,9 @@ class TestSafeSession:
 
     def test_session_command_char_customizable(self):
         perms = Permissions(PermissionLevel.CONTROLLED)
-        session = SafeSession(perms=perms, command_char="!")
-        assert session.command_char == "!"
+        registry = CommandRegistry("!")
+        session = SafeSession(perms=perms, command_registry=registry)
+        assert session.command_registry.command_prefix == "!"
 
     def test_session_serialization(self):
         perms = Permissions(PermissionLevel.CONTROLLED, imports=["math:*"])
@@ -520,6 +608,30 @@ class TestAsyncExecution:
             await session.async_exec("while True: pass")
 
     @pytest.mark.asyncio
+    async def test_async_exec_timeout_error_contains_partial_output(self):
+        perms = Permissions(
+            PermissionLevel.CONTROLLED,
+            timeout_seconds=0.1,
+        )
+        session = SafeSession(perms=perms)
+        with pytest.raises(ExecutionTimeoutError) as timeout_error:
+            await session.async_exec_response("print('async begin')\nwhile True: pass")
+
+        assert "async begin" in timeout_error.value.output
+
+    @pytest.mark.asyncio
+    async def test_async_exec_memory_limit_error_contains_partial_output(self):
+        perms = Permissions(
+            PermissionLevel.CONTROLLED,
+            memory_limit_bytes=1024 * 32,
+        )
+        session = SafeSession(perms=perms)
+        with pytest.raises(ExecutionMemoryLimitError) as memory_error:
+            await session.async_exec_response("print('async mem')\nblob = [0] * (1024 * 1024)")
+
+        assert "async mem" in memory_error.value.output
+
+    @pytest.mark.asyncio
     async def test_async_exec_custom_timeout(self):
         perms = Permissions(PermissionLevel.CONTROLLED, timeout_seconds=10.0)
         session = SafeSession(perms=perms)
@@ -528,6 +640,37 @@ class TestAsyncExecution:
             timeout=0.5,  # Should complete well before this
         )
         assert result == sum(range(1000))
+
+    @pytest.mark.asyncio
+    async def test_async_exec_response_includes_rich_artifacts(self, monkeypatch):
+        class _FakeFigure:
+            def savefig(self, buffer, *, format, bbox_inches):
+                assert format == "png"
+                assert bbox_inches == "tight"
+                buffer.write(b"async-fake-png")
+
+        class _FakePyplot:
+            def get_fignums(self):
+                return [11]
+
+            def figure(self, _fig_num):
+                return _FakeFigure()
+
+            def close(self, _figure):
+                return None
+
+        monkeypatch.setitem(sys.modules, "matplotlib.pyplot", _FakePyplot())
+
+        perms = Permissions(PermissionLevel.CONTROLLED)
+        session = SafeSession(perms=perms)
+
+        response = await session.async_exec_response("2 * 8")
+
+        assert response.result == 16
+        assert response.output == ""
+        assert len(response.display_artifacts) == 1
+        assert response.display_artifacts[0].mime_type == "image/png"
+        assert response.display_artifacts[0].data == b"async-fake-png"
 
 
 # =============================================================================
@@ -543,14 +686,14 @@ class TestCommandRegistry:
         perms = Permissions(PermissionLevel.CONTROLLED)
         session = SafeSession(perms=perms)
         # Ensure help command exists and dispatches
-        result = registry.dispatch("help vars", session=session)
+        result = registry.dispatch(":help vars", session=session)
         assert result is not False
 
     def test_builtin_commands_command(self):
         registry = CommandRegistry()
         perms = Permissions(PermissionLevel.CONTROLLED)
         session = SafeSession(perms=perms)
-        result = registry.dispatch("commands", session=session)
+        result = registry.dispatch(":commands", session=session)
         assert result is not False
 
     def test_vars_command_lists_variables(self):
@@ -560,7 +703,7 @@ class TestCommandRegistry:
         session.exec("x = 42")
         session.exec("y = 'hello'")
         # just ensure it dispatches without error
-        result = registry.dispatch("vars", session=session)
+        result = registry.dispatch(":vars", session=session)
         assert result is not False
 
     def test_reset_command_clears_vars(self):
@@ -568,13 +711,13 @@ class TestCommandRegistry:
         perms = Permissions(PermissionLevel.CONTROLLED)
         session = SafeSession(perms=perms)
         session.exec("x = 100")
-        registry.dispatch("reset", session=session)
+        registry.dispatch(":reset", session=session)
         assert len(session.user_vars) == 0
 
     def test_custom_command_registration(self):
         registry = CommandRegistry()
         perms = Permissions(PermissionLevel.CONTROLLED)
-        session = SafeSession(perms=perms, repl_commands=registry)
+        session = SafeSession(perms=perms, command_registry=registry)
 
         called = []
 
@@ -583,7 +726,7 @@ class TestCommandRegistry:
             called.append(args)
             return True
 
-        result = registry.dispatch("test arg1", session=session)
+        result = registry.dispatch(":test arg1", session=session)
         assert result is True
         assert called == ["arg1"]
 

@@ -25,7 +25,6 @@ DEFAULT_IMPORTS_BLOCK: dict[str, dict[int, set[str]]] = {}
 # ---------------------------------------------------------------------------
 # Core Python – Data Types
 # ---------------------------------------------------------------------------
-
 DEFAULT_IMPORTS_ALLOW["datetime"] = {1: {"*"}}
 DEFAULT_IMPORTS_ALLOW["zoneinfo"] = {1: {"*"}}
 DEFAULT_IMPORTS_ALLOW["calendar"] = {1: {"*"}}
@@ -68,7 +67,6 @@ DEFAULT_IMPORTS_BLOCK["graphlib"] = {1: {"TopologicalSorter"}}
 # ---------------------------------------------------------------------------
 # Core Python – Numeric and Mathematical
 # ---------------------------------------------------------------------------
-
 DEFAULT_IMPORTS_ALLOW["numbers"] = {1: {"*"}}
 DEFAULT_IMPORTS_ALLOW["math"] = {1: {"*"}}
 DEFAULT_IMPORTS_ALLOW["cmath"] = {1: {"*"}}
@@ -81,7 +79,6 @@ DEFAULT_IMPORTS_ALLOW["statistics"] = {1: {"*"}}
 # ---------------------------------------------------------------------------
 # Core Python – Functional Programming
 # ---------------------------------------------------------------------------
-
 DEFAULT_IMPORTS_ALLOW["itertools"] = {2: {"*"}}
 DEFAULT_IMPORTS_ALLOW["functools"] = {2: {"*"}}
 DEFAULT_IMPORTS_ALLOW["operator"] = {3: {"*"}}
@@ -90,7 +87,6 @@ DEFAULT_IMPORTS_ALLOW["operator"] = {3: {"*"}}
 # ---------------------------------------------------------------------------
 # Core Python – Internet Data / Multimedia / i18n
 # ---------------------------------------------------------------------------
-
 DEFAULT_IMPORTS_ALLOW["json"] = {3: {"*"}}
 DEFAULT_IMPORTS_ALLOW["wave"] = {3: {"*"}}
 DEFAULT_IMPORTS_ALLOW["colorsys"] = {3: {"*"}}
@@ -101,7 +97,6 @@ DEFAULT_IMPORTS_ALLOW["locale"] = {3: {"*"}}
 # ---------------------------------------------------------------------------
 # Third-party – NumPy
 # ---------------------------------------------------------------------------
-
 DEFAULT_IMPORTS_ALLOW["numpy"] = {1: {"*"}}
 DEFAULT_IMPORTS_BLOCK["numpy"] = {
     3: {
@@ -117,7 +112,6 @@ DEFAULT_IMPORTS_BLOCK["numpy"] = {
 # ---------------------------------------------------------------------------
 # Third-party – Matplotlib
 # ---------------------------------------------------------------------------
-
 DEFAULT_IMPORTS_ALLOW["matplotlib"] = {2: {"*"}}
 DEFAULT_IMPORTS_BLOCK["matplotlib"] = {
     3: {"backends", "backend_bases", "use"},
@@ -127,7 +121,6 @@ DEFAULT_IMPORTS_BLOCK["matplotlib"] = {
 # ---------------------------------------------------------------------------
 # Third-party – SciPy
 # ---------------------------------------------------------------------------
-
 DEFAULT_IMPORTS_ALLOW["scipy"] = {1: {"*"}}
 DEFAULT_IMPORTS_BLOCK["scipy"] = {
     3: {"datasets", "io"},
@@ -142,7 +135,6 @@ DEFAULT_IMPORTS_BLOCK["scipy"] = {
 # ---------------------------------------------------------------------------
 # Third-party – SymPy
 # ---------------------------------------------------------------------------
-
 DEFAULT_IMPORTS_ALLOW["sympy"] = {1: {"*"}}
 DEFAULT_IMPORTS_BLOCK["sympy"] = {
     3: {"codegen", "core.sympify", "external", "parsing"},
@@ -155,3 +147,12 @@ DEFAULT_IMPORTS_BLOCK["sympy"] = {
         "printing", "simplify", "stats",
     },
 }
+
+# ---------------------------------------------------------------------------
+# Third-party – MyDyce
+# ---------------------------------------------------------------------------
+DEFAULT_IMPORTS_ALLOW["MyDyce"] = {1: {"*"}}
+
+
+
+# print( str(list(DEFAULT_IMPORTS_ALLOW.keys())[-4:])[1:-1].replace("'", "").replace(",", "") )

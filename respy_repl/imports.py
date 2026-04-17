@@ -64,7 +64,7 @@ def _parse_symbol_alias(item: str) -> tuple[str, str]:
 def normalize_validate_import(spec: str) -> NormalizedImportSpec:
     """Normalize one CLI import spec into a structured, picklable representation.
 
-    Format: ``{ (module_name, module_alias): {(import_name, import_alias), ...} }``
+    Output Format: ``{ (module_name, module_alias): {(import_name, import_alias), ...} }``
 
     Args:
         spec: Import spec string, e.g. ``"math:sqrt"`` or ``"numpy as np:*"``.
