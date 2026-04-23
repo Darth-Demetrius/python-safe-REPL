@@ -27,11 +27,10 @@ from collections.abc import Callable, Mapping
 import pickle
 import cloudpickle
 
-from .engine import DisplayArtifact, ExecResult, exec_restricted
+from .engine import DisplayArtifact, ExecResult, _code_preview, exec_restricted
 from .imports import NormalizedImportSpec
 from .policy import PermissionLevel, Permissions
 from .repl_command_registry import CommandRegistry
-
 
 class ExecutionTimeoutError(TimeoutError):
     """Timeout error carrying partial execution output.
@@ -203,8 +202,18 @@ class SafeSession:
         if not outcome.ok:
             assert outcome.exception is not None
             if isinstance(outcome.exception, TimeoutError):
+                detail = str(outcome.exception).strip()
+                if not detail:
+                    detail = (
+                        f"Execution timed out after {self.perms.timeout_seconds:.3f}s."
+                        if self.perms.timeout_seconds is not None
+                        else "Execution timed out."
+                    )
+                preview = _code_preview(code)
+                if preview:
+                    detail = f"{detail} Code preview: {preview!r}."
                 raise ExecutionTimeoutError(
-                    str(outcome.exception),
+                    detail,
                     output=outcome.output,
                     display_artifacts=outcome.display_artifacts,
                 ) from outcome.exception
@@ -251,9 +260,10 @@ class SafeSession:
         Args:
             code: Raw Python source string.
             timeout: Optional asyncio-level timeout in seconds.  Defaults to the
-                session's ``perms.timeout_seconds`` if not specified (using a
-                generous 1.5x multiplier to allow the in-thread mechanism to
-                fire first).  Pass ``None`` to disable the asyncio-level guard.
+                session's ``perms.timeout_seconds`` plus a grace window when
+                not specified, allowing the in-thread timeout mechanism to fire
+                first and preserve partial output. Pass ``None`` to disable the
+                asyncio-level guard.
 
         Returns:
             Full execution response including rich display artifacts.
@@ -263,12 +273,32 @@ class SafeSession:
             Any exception raised by within the user's code.
         """
         if timeout is None and self.perms.timeout_seconds is not None:
-            timeout = self.perms.timeout_seconds * 1.5
+            timeout = self.perms.timeout_seconds + 1.0
 
         coro = asyncio.to_thread(self.exec_response, code)
+        task = asyncio.create_task(coro)
         if timeout is not None:
-            return await asyncio.wait_for(coro, timeout=timeout)
-        return await coro
+            try:
+                return await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+            except asyncio.TimeoutError as exc:
+                # Give the in-thread timeout path a short grace period to finish
+                # so callers can receive partial output/artifacts when available.
+                try:
+                    return await asyncio.wait_for(asyncio.shield(task), timeout=0.75)
+                except asyncio.TimeoutError:
+                    pass
+                except Exception:
+                    if task.done():
+                        return task.result()
+
+                preview = _code_preview(code)
+                detail = f"Execution reached asyncio-level timeout after {timeout:.3f}s."
+                if self.perms.timeout_seconds is not None:
+                    detail += f" Session timeout is {self.perms.timeout_seconds:.3f}s."
+                if preview:
+                    detail += f" Code preview: {preview!r}."
+                raise ExecutionTimeoutError(detail) from exc
+        return await task
 
     async def async_exec(self, code: str, *, timeout: float | None = None) -> tuple[object | None, str]:
         """Execute one snippet asynchronously without blocking the event loop.
@@ -287,9 +317,9 @@ class SafeSession:
         Args:
             code: Raw Python source string.
             timeout: Optional asyncio-level timeout in seconds.  Defaults to the
-                session's ``perms.timeout_seconds`` if not specified (using a
-                generous 1.5× multiplier to allow the in-thread mechanism to
-                fire first).  Pass ``None`` to disable the asyncio-level guard.
+                session's ``perms.timeout_seconds`` plus a grace window when
+                not specified, allowing the in-thread timeout mechanism to fire
+                first. Pass ``None`` to disable the asyncio-level guard.
 
         Returns:
             A ``(result, output)`` tuple (same as ``exec``).

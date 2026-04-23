@@ -41,6 +41,11 @@ def _write_guard(obj: object) -> object:
     return obj
 
 
+def _default_apply(function: object, *args: object, **kwargs: object) -> object:
+    """Call helper required by RestrictedPython for ``*args``/``**kwargs`` calls."""
+    return function(*args, **kwargs)  # type: ignore[operator]
+
+
 
 class PermissionLevel(IntEnum):
     """Permission levels ordered from most restrictive to most permissive.
@@ -195,6 +200,7 @@ class Permissions:
             "_getiter_": default_guarded_getiter,
             "_getitem_": default_guarded_getitem,
             "_getattr_": default_guarded_getattr,
+            "_apply_": _default_apply,
             "_write_": _write_guard,
             "_inplacevar_": _default_inplacevar,
             "_unpack_sequence_": guarded_unpack_sequence,

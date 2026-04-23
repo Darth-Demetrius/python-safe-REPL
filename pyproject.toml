@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "safe-repl"
-version = "0.7.0"
+version = "0.7.1"
 description = "Safe REPL with tiered permission levels for restricted Python execution"
 authors = ["Your Name <you@example.com>"]
 readme = "README.md"

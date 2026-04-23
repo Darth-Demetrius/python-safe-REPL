@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-04-22
+
+### Fixed
+
+- Fixed `respy_repl` execution of function calls using starred args/kwargs (for example `print(*values)`) by providing the required RestrictedPython `_apply_` runtime helper.
+- Fixed `respy_repl` timeout error messaging so raised timeout exceptions include the effective timeout window and a short code preview instead of generic/empty messages.
+
 ## [0.7.0] - 2026-04-16
 
 ### Added
@@ -196,7 +203,8 @@
 - Added unit and integration CLI tests for error handling and flag behavior.
 - Expanded README with API surface, exception handling, execution-mode defaults, internal module split notes, and persistent subprocess lifecycle examples.
 
-[Unreleased]: https://github.com/Darth-Demetrius/python-sub-REPL/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/Darth-Demetrius/python-sub-REPL/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.7.1
 [0.7.0]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.7.0
 [0.6.0]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.6.0
 [0.5.0]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.5.0

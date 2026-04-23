@@ -63,6 +63,13 @@ class TestExecRestricted:
         assert r.ok
         assert "hello world" in r.output
 
+    def test_print_with_starred_args_is_captured(self):
+        perms = Permissions(PermissionLevel.CONTROLLED)
+        uv = {}
+        r = exec_restricted("print(*[x for x in range(5)])", uv, perms=perms)
+        assert r.ok
+        assert "0 1 2 3 4" in r.output
+
     def test_multiple_print_calls(self):
         perms = Permissions(PermissionLevel.CONTROLLED)
         uv = {}
@@ -372,6 +379,7 @@ class TestTimeout:
         r = exec_restricted("while True: pass", uv, perms=perms)
         assert not r.ok
         assert isinstance(r.exception, TimeoutError)
+        assert "Execution timed out after" in str(r.exception)
 
     def test_timeout_none_disables_limit(self):
         perms = Permissions(
@@ -526,6 +534,7 @@ class TestSafeSession:
             session.exec_response("print('begin')\nwhile True: pass")
 
         assert "begin" in timeout_error.value.output
+        assert "Execution timed out after" in str(timeout_error.value)
 
     def test_session_memory_limit_error_contains_partial_output(self):
         perms = Permissions(PermissionLevel.CONTROLLED, memory_limit_bytes=1024 * 32)
@@ -617,7 +626,28 @@ class TestAsyncExecution:
         with pytest.raises(ExecutionTimeoutError) as timeout_error:
             await session.async_exec_response("print('async begin')\nwhile True: pass")
 
-        assert "async begin" in timeout_error.value.output
+        message = str(timeout_error.value)
+        if timeout_error.value.output:
+            assert "async begin" in timeout_error.value.output
+            assert "Execution timed out after" in message
+        else:
+            assert "asyncio-level timeout" in message
+
+    @pytest.mark.asyncio
+    async def test_async_exec_asyncio_timeout_message_is_descriptive(self):
+        perms = Permissions(
+            PermissionLevel.CONTROLLED,
+            imports=["time:sleep"],
+            timeout_seconds=None,
+        )
+        session = SafeSession(perms=perms)
+
+        with pytest.raises(ExecutionTimeoutError) as timeout_error:
+            await session.async_exec_response("sleep(2.0)", timeout=0.01)
+
+        message = str(timeout_error.value)
+        assert "asyncio-level timeout" in message
+        assert "0.010s" in message
 
     @pytest.mark.asyncio
     async def test_async_exec_memory_limit_error_contains_partial_output(self):

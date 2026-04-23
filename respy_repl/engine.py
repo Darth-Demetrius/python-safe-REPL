@@ -103,6 +103,35 @@ class _PyplotLike(Protocol):
         ...
 
 
+def _code_preview(code: str, *, max_len: int = 80) -> str:
+    """Return a short one-line preview of the user snippet for diagnostics."""
+    first_line = next((line.strip() for line in code.splitlines() if line.strip()), "")
+    if len(first_line) <= max_len:
+        return first_line
+    return first_line[: max_len - 3] + "..."
+
+
+def _build_timeout_message(
+    *,
+    timeout_seconds: float | None,
+    code: str,
+    thread_still_running: bool,
+) -> str:
+    """Build a descriptive timeout message with limit and code context."""
+    limit_text = (
+        f"{timeout_seconds:.3f}s" if timeout_seconds is not None else "configured limit"
+    )
+    preview = _code_preview(code)
+    message = f"Execution timed out after {limit_text}."
+    if preview:
+        message += f" Code preview: {preview!r}."
+    if thread_still_running:
+        message += " Worker thread is still running (best-effort cancellation)."
+    else:
+        message += " Execution was interrupted by the timeout guard."
+    return message
+
+
 def _collect_matplotlib_artifacts() -> list[DisplayArtifact]:
     """Capture open matplotlib pyplot figures as PNG artifacts.
 
@@ -339,12 +368,32 @@ def exec_restricted(
             display_artifacts=display_artifacts,
             ok=False,
             exception=TimeoutError(
-                "Execution timed out (thread still running – best-effort)."
+                _build_timeout_message(
+                    timeout_seconds=perms.timeout_seconds,
+                    code=code,
+                    thread_still_running=True,
+                )
             ),
         )
 
     held_exc = exc_holder[0]
     if held_exc is not None:
+        if isinstance(held_exc, TimeoutError):
+            detail = str(held_exc).strip()
+            if detail:
+                held_exc = TimeoutError(
+                    f"{detail} (timeout limit: {perms.timeout_seconds:.3f}s)."
+                    if perms.timeout_seconds is not None
+                    else detail
+                )
+            else:
+                held_exc = TimeoutError(
+                    _build_timeout_message(
+                        timeout_seconds=perms.timeout_seconds,
+                        code=code,
+                        thread_still_running=False,
+                    )
+                )
         return ExecResult(
             result=None,
             output=captured_output,

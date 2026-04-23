@@ -11,6 +11,8 @@ The repository also includes `respy_repl`, a RestrictedPython-based variant desi
 For `respy_repl`, `SafeSession.exec(...)` and `SafeSession.async_exec(...)` return `(result, output)`, where `output` contains captured `print(...)` text from the executed snippet.
 When you need rich outputs (for example matplotlib figures), use `SafeSession.exec_response(...)` or `SafeSession.async_exec_response(...)` and read `response.display_artifacts`.
 When a `respy_repl` execution times out, `SafeSession.exec_response(...)` and `SafeSession.async_exec_response(...)` raise `ExecutionTimeoutError`, which includes partial `output` and `display_artifacts` generated before timeout.
+Timeout exception messages include the effective timeout duration and a short code preview to make timeout failures easier to diagnose.
+If an asyncio-level timeout fires before the in-thread timeout path completes, partial output may be unavailable.
 When a `respy_repl` execution exceeds `memory_limit_bytes`, these response-oriented APIs raise `ExecutionMemoryLimitError`, which also includes partial `output` and `display_artifacts` generated before the memory-limit failure.
 
 Example:
