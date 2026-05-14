@@ -202,6 +202,7 @@ def exec_restricted(
     user_vars: dict[str, object],
     *,
     perms: Permissions,
+    source_filename: str = "<string>",
 ) -> ExecResult:
     """Compile, validate, and execute *code* under a ``Permissions`` policy.
 
@@ -221,6 +222,8 @@ def exec_restricted(
                    defined by the snippet.  Passed as the *locals* dict to
                    ``exec``/``eval``.
         perms: Active execution policy.
+        source_filename: Filename attached to compiled user code for traceback
+            rendering.
 
     Returns:
         An ``ExecResult`` describing the outcome.
@@ -232,7 +235,7 @@ def exec_restricted(
     # ------------------------------------------------------------------
     # 1. Parse and normalize source
     # ------------------------------------------------------------------
-    tree = ast.parse(code, mode="exec")
+    tree = ast.parse(code, filename=source_filename, mode="exec")
     _RESULT_KEY = "respy_result_value"
     is_single_expr = len(tree.body) == 1 and isinstance(tree.body[0], ast.Expr)
 
@@ -253,7 +256,7 @@ def exec_restricted(
     # ------------------------------------------------------------------
     # 2. Compile
     # ------------------------------------------------------------------
-    compile_result = compile_restricted_exec(source)
+    compile_result = compile_restricted_exec(source, filename=source_filename)
     if compile_result.errors:
         raise SyntaxError("\n".join(compile_result.errors))
 

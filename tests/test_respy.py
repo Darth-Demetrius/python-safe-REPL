@@ -526,6 +526,120 @@ class TestSafeSession:
         with pytest.raises(ZeroDivisionError):
             session.exec("1 / 0")
 
+    def test_session_exec_formats_user_traceback(self):
+        perms = Permissions(PermissionLevel.CONTROLLED)
+        session = SafeSession(perms=perms)
+
+        code = (
+            "def inner():\n"
+            "    return 1 / 0\n"
+            "\n"
+            "def outer():\n"
+            "    return inner()\n"
+            "\n"
+            "outer()"
+        )
+
+        with pytest.raises(ZeroDivisionError) as error_info:
+            session.exec_response(code)
+
+        rendered = str(error_info.value)
+        assert rendered.startswith("Traceback (most recent call last):")
+        assert 'File "<repl input>", line ' in rendered
+        assert "in inner" in rendered
+        assert "in outer" in rendered
+        assert "ZeroDivisionError: division by zero" in rendered
+        assert 'File "<string>"' not in rendered
+        assert getattr(error_info.value, "formatted_user_traceback") == rendered
+
+    def test_session_exec_formats_user_traceback_with_notes(self):
+        perms = Permissions(PermissionLevel.CONTROLLED)
+        session = SafeSession(perms=perms)
+
+        code = (
+            "def boom():\n"
+            "    try:\n"
+            "        raise ValueError('invalid value')\n"
+            "    except ValueError as err:\n"
+            "        err.add_note(\"Did you mean: 'abs'?\")\n"
+            "        raise\n"
+            "\n"
+            "boom()"
+        )
+
+        with pytest.raises(ValueError) as error_info:
+            session.exec_response(code)
+
+        rendered = str(error_info.value)
+        assert "ValueError: invalid value" in rendered
+        assert "Did you mean: 'abs'?" in rendered
+
+    def test_session_exec_formats_user_traceback_with_custom_filename(self):
+        perms = Permissions(PermissionLevel.CONTROLLED)
+        session = SafeSession(
+            perms=perms,
+            user_traceback_filename="<discord input>",
+        )
+
+        with pytest.raises(ZeroDivisionError) as error_info:
+            session.exec_response("1 / 0")
+
+        assert 'File "<discord input>", line 1, in <module>' in str(error_info.value)
+
+    def test_session_exec_preserves_name_error_suggestions(self):
+        perms = Permissions(PermissionLevel.CONTROLLED)
+        session = SafeSession(perms=perms)
+
+        with pytest.raises(NameError) as error_info:
+            session.exec_response("abx")
+
+        rendered = str(error_info.value)
+        assert "NameError: name 'abx' is not defined" in rendered
+        assert "Did you mean: 'abs'?" in rendered
+
+    def test_session_exec_traceback_can_mix_input_names(self):
+        perms = Permissions(PermissionLevel.CONTROLLED)
+        session = SafeSession(perms=perms)
+
+        session.exec_response(
+            "def foo(bar: str):\n    return 1 / 0",
+            input_name="<foo file>",
+        )
+
+        with pytest.raises(ZeroDivisionError) as error_info:
+            session.exec_response("foo('alice')", input_name="<repl input>")
+
+        rendered = str(error_info.value)
+        assert 'File "<repl input>", line 1, in <module>' in rendered
+        assert 'File "<foo file>", line 2, in foo' in rendered
+
+    def test_session_exec_uses_default_name_for_blank_input_name(self):
+        perms = Permissions(PermissionLevel.CONTROLLED)
+        session = SafeSession(perms=perms)
+
+        with pytest.raises(NameError) as error_info:
+            session.exec_response("missing_name", input_name="   ")
+
+        rendered = str(error_info.value)
+        assert 'File "<repl input>", line 1, in <module>' in rendered
+
+    def test_session_traceback_labels_persist_after_pickle_round_trip(self):
+        perms = Permissions(PermissionLevel.CONTROLLED)
+        session = SafeSession(perms=perms)
+
+        session.exec_response(
+            "def foo():\n    return 1 / 0",
+            input_name="<foo file>",
+        )
+
+        restored = pickle.loads(pickle.dumps(session))
+        with pytest.raises(ZeroDivisionError) as error_info:
+            restored.exec_response("foo()", input_name="<repl input>")
+
+        rendered = str(error_info.value)
+        assert 'File "<repl input>", line 1, in <module>' in rendered
+        assert 'File "<foo file>", line 2, in foo' in rendered
+
     def test_session_timeout_error_contains_partial_output(self):
         perms = Permissions(PermissionLevel.CONTROLLED, timeout_seconds=0.1)
         session = SafeSession(perms=perms)

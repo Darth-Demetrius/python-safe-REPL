@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-14
+
+### Changed
+
+- Traceback formatting (`respy_repl`): user-code exceptions now render with user-only traceback frames, preserve Python hint/notes output, and expose `formatted_user_traceback` plus `original_message` on the re-raised exception object.
+- Input labeling (`respy_repl`): `SafeSession` supports a session default label via `user_traceback_filename` and per-execution labels via `input_name` on `exec(...)`, `exec_response(...)`, `async_exec(...)`, and `async_exec_response(...)`, including mixed-frame tracebacks and persisted labels across session pickle/relaunch.
+
 ## [0.7.1] - 2026-04-22
 
 ### Fixed
@@ -203,7 +210,8 @@
 - Added unit and integration CLI tests for error handling and flag behavior.
 - Expanded README with API surface, exception handling, execution-mode defaults, internal module split notes, and persistent subprocess lifecycle examples.
 
-[Unreleased]: https://github.com/Darth-Demetrius/python-sub-REPL/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/Darth-Demetrius/python-sub-REPL/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.8.0
 [0.7.1]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.7.1
 [0.7.0]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.7.0
 [0.6.0]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.6.0

@@ -23,6 +23,7 @@ import argparse
 import contextlib
 import io
 import asyncio
+import traceback
 from collections.abc import Callable, Mapping
 import pickle
 import cloudpickle
@@ -31,6 +32,78 @@ from .engine import DisplayArtifact, ExecResult, _code_preview, exec_restricted
 from .imports import NormalizedImportSpec
 from .policy import PermissionLevel, Permissions
 from .repl_command_registry import CommandRegistry
+
+_DEFAULT_USER_TRACEBACK_FILENAME = "<repl input>"
+
+
+def _iter_user_traceback_frames(
+    exc: BaseException,
+    *,
+    filename_map: Mapping[str, str],
+) -> list[tuple[str, int, str]]:
+    """Return user-code traceback frames as ``(display_name, line, function)``."""
+    frames: list[tuple[str, int, str]] = []
+    tb = exc.__traceback__
+    while tb is not None:
+        code = tb.tb_frame.f_code
+        display_name = filename_map.get(code.co_filename)
+        if display_name is not None:
+            frames.append((display_name, tb.tb_lineno, code.co_name))
+        tb = tb.tb_next
+    return frames
+
+
+def _format_user_traceback_message(
+    exc: BaseException,
+    *,
+    filename_map: Mapping[str, str],
+) -> str:
+    """Format an exception with traceback frames limited to user code.
+
+    Args:
+        exc: Exception to render.
+        filename_map: Mapping from internal code-object filenames to
+            user-facing display labels.
+
+    Returns:
+        A traceback-like message suitable for user-facing display.
+    """
+    lines: list[str] = []
+    user_frames = _iter_user_traceback_frames(exc, filename_map=filename_map)
+    if user_frames:
+        lines.append("Traceback (most recent call last):")
+        for display_name, line_no, function_name in user_frames:
+            lines.append(
+                f'  File "{display_name}", line {line_no}, in {function_name}'
+            )
+
+    rendered_exception_only = "".join(
+        traceback.TracebackException.from_exception(exc).format_exception_only()
+    ).rstrip("\n")
+    if rendered_exception_only:
+        lines.extend(rendered_exception_only.splitlines())
+    else:
+        lines.append(type(exc).__name__)
+
+    return "\n".join(lines)
+
+
+def _attach_user_traceback_message(
+    exc: BaseException,
+    *,
+    filename_map: Mapping[str, str],
+) -> BaseException:
+    """Attach a user-facing traceback message to ``exc`` and return it."""
+    original_message = str(exc)
+    formatted_message = _format_user_traceback_message(
+        exc,
+        filename_map=filename_map,
+    )
+    setattr(exc, "original_message", original_message)
+    setattr(exc, "formatted_user_traceback", formatted_message)
+    exc.args = (formatted_message,)
+    return exc
+
 
 class ExecutionTimeoutError(TimeoutError):
     """Timeout error carrying partial execution output.
@@ -81,6 +154,8 @@ class SafeSession:
         identifier: Optional host-owned identifier reserved for embedding use.
         command_registry: Optional custom command registry; defaults to the
             built-in ``CommandRegistry``.
+        user_traceback_filename: User-facing filename label shown in formatted
+            traceback output for user-code frames.
     """
 
     def __init__(
@@ -90,10 +165,14 @@ class SafeSession:
         identifier: str | None = None,
         *,
         command_registry: CommandRegistry | None = None,
+        user_traceback_filename: str = _DEFAULT_USER_TRACEBACK_FILENAME,
     ) -> None:
         self.perms = perms
         self.user_vars: dict[str, object] = user_vars or {}
         self.command_registry = command_registry or CommandRegistry()
+        self.user_traceback_filename = user_traceback_filename
+        self._traceback_filename_map: dict[str, str] = {}
+        self._input_counter = 0
         self._cache_startup_summaries()
 
     # ------------------------------------------------------------------
@@ -101,6 +180,28 @@ class SafeSession:
     # ------------------------------------------------------------------
 
     _CLOUDPICKLE_MARKER: str = "__respy_cloudpickle__"
+    _SOURCE_FILENAME_PREFIX: str = "<respy input "
+
+    def _resolve_input_name(self, input_name: str | None) -> str:
+        """Return the display label to use for one execution input."""
+        if isinstance(input_name, str):
+            stripped = input_name.strip()
+            if stripped:
+                return stripped
+        return self.user_traceback_filename
+
+    def _register_input_filename(self, *, input_name: str | None) -> str:
+        """Create and store an internal filename for one execution input."""
+        self._input_counter += 1
+        internal_filename = f"{self._SOURCE_FILENAME_PREFIX}{self._input_counter}>"
+        self._traceback_filename_map[internal_filename] = self._resolve_input_name(input_name)
+        return internal_filename
+
+    def _build_traceback_filename_map(self) -> dict[str, str]:
+        """Build the filename map used for user-facing traceback rendering."""
+        resolver = dict(self._traceback_filename_map)
+        resolver.setdefault("<string>", self.user_traceback_filename)
+        return resolver
 
     def to_relaunch_data(self) -> dict[str, object]:
         """Return a picklable payload re-creating this session.
@@ -133,7 +234,9 @@ class SafeSession:
         return {
             "perms": self.perms.to_relaunch_data(),
             "user_vars": serialisable_vars,
-            #"command_registry": self.command_registry,
+            "user_traceback_filename": self.user_traceback_filename,
+            "traceback_filename_map": dict(self._traceback_filename_map),
+            "input_counter": self._input_counter,
         }
 
     @classmethod
@@ -148,6 +251,12 @@ class SafeSession:
         """
         perms_payload = payload["perms"]
         user_vars_raw = payload.get("user_vars", {})
+        user_traceback_filename_raw = payload.get(
+            "user_traceback_filename",
+            _DEFAULT_USER_TRACEBACK_FILENAME,
+        )
+        traceback_filename_map_raw = payload.get("traceback_filename_map", {})
+        input_counter_raw = payload.get("input_counter", 0)
         command_registry = payload.get("command_registry", None)
 
         if isinstance(user_vars_raw, dict):
@@ -167,12 +276,35 @@ class SafeSession:
         else:
             user_vars = {}
         command_registry = command_registry if isinstance(command_registry, CommandRegistry) else None
+        user_traceback_filename = (
+            user_traceback_filename_raw
+            if isinstance(user_traceback_filename_raw, str)
+            else _DEFAULT_USER_TRACEBACK_FILENAME
+        )
+        traceback_filename_map = (
+            {
+                str(internal): str(display)
+                for internal, display in traceback_filename_map_raw.items()
+                if isinstance(internal, str) and isinstance(display, str)
+            }
+            if isinstance(traceback_filename_map_raw, dict)
+            else {}
+        )
+        input_counter = (
+            input_counter_raw
+            if isinstance(input_counter_raw, int) and input_counter_raw >= 0
+            else 0
+        )
 
-        return cls(
+        session = cls(
             perms=Permissions.from_relaunch_data(perms_payload),  # type: ignore[arg-type]
             user_vars=user_vars,
             command_registry=command_registry,
+            user_traceback_filename=user_traceback_filename,
         )
+        session._traceback_filename_map = traceback_filename_map
+        session._input_counter = input_counter
+        return session
 
     def __getstate__(self) -> dict[str, object]:
         return self.to_relaunch_data()
@@ -185,8 +317,12 @@ class SafeSession:
     # Execution
     # ------------------------------------------------------------------
 
-    def exec_response(self, code: str) -> ExecResult:
+    def exec_response(self, code: str, *, input_name: str | None = None) -> ExecResult:
         """Execute one snippet and return the full ``ExecResult`` payload.
+
+        Args:
+            code: Raw Python source string.
+            input_name: Optional user-facing label for this execution input.
 
         Returns:
             Full execution response including result, text output, and rich
@@ -198,7 +334,13 @@ class SafeSession:
             ``TimeoutError`` when the execution timeout is exceeded.
             ``MemoryError`` when the memory limit is exceeded.
         """
-        outcome: ExecResult = exec_restricted(code, self.user_vars, perms=self.perms)
+        source_filename = self._register_input_filename(input_name=input_name)
+        outcome: ExecResult = exec_restricted(
+            code,
+            self.user_vars,
+            perms=self.perms,
+            source_filename=source_filename,
+        )
         if not outcome.ok:
             assert outcome.exception is not None
             if isinstance(outcome.exception, TimeoutError):
@@ -223,10 +365,13 @@ class SafeSession:
                     output=outcome.output,
                     display_artifacts=outcome.display_artifacts,
                 ) from outcome.exception
-            raise outcome.exception
+            raise _attach_user_traceback_message(
+                outcome.exception,
+                filename_map=self._build_traceback_filename_map(),
+            )
         return outcome
 
-    def exec(self, code: str) -> tuple[object | None, str]:
+    def exec(self, code: str, *, input_name: str | None = None) -> tuple[object | None, str]:
         """Execute one snippet and return ``(result, captured_output)``.
 
         The ``user_vars`` dict is updated in place with any new names defined
@@ -234,6 +379,7 @@ class SafeSession:
 
         Args:
             code: Raw Python source string.
+            input_name: Optional user-facing label for this execution input.
 
         Returns:
             A ``(result, output)`` tuple where *result* is the value of the
@@ -246,19 +392,21 @@ class SafeSession:
             ``TimeoutError`` when the execution timeout is exceeded.
             ``MemoryError`` when the memory limit is exceeded.
         """
-        outcome = self.exec_response(code)
+        outcome = self.exec_response(code, input_name=input_name)
         return outcome.result, outcome.output
 
     async def async_exec_response(
         self,
         code: str,
         *,
+        input_name: str | None = None,
         timeout: float | None = None,
     ) -> ExecResult:
         """Execute one snippet asynchronously and return ``ExecResult``.
 
         Args:
             code: Raw Python source string.
+            input_name: Optional user-facing label for this execution input.
             timeout: Optional asyncio-level timeout in seconds.  Defaults to the
                 session's ``perms.timeout_seconds`` plus a grace window when
                 not specified, allowing the in-thread timeout mechanism to fire
@@ -275,7 +423,7 @@ class SafeSession:
         if timeout is None and self.perms.timeout_seconds is not None:
             timeout = self.perms.timeout_seconds + 1.0
 
-        coro = asyncio.to_thread(self.exec_response, code)
+        coro = asyncio.to_thread(self.exec_response, code, input_name=input_name)
         task = asyncio.create_task(coro)
         if timeout is not None:
             try:
@@ -300,7 +448,13 @@ class SafeSession:
                 raise ExecutionTimeoutError(detail) from exc
         return await task
 
-    async def async_exec(self, code: str, *, timeout: float | None = None) -> tuple[object | None, str]:
+    async def async_exec(
+        self,
+        code: str,
+        *,
+        input_name: str | None = None,
+        timeout: float | None = None,
+    ) -> tuple[object | None, str]:
         """Execute one snippet asynchronously without blocking the event loop.
 
         Designed for use in Discord bot command handlers::
@@ -316,6 +470,7 @@ class SafeSession:
 
         Args:
             code: Raw Python source string.
+            input_name: Optional user-facing label for this execution input.
             timeout: Optional asyncio-level timeout in seconds.  Defaults to the
                 session's ``perms.timeout_seconds`` plus a grace window when
                 not specified, allowing the in-thread timeout mechanism to fire
@@ -328,7 +483,11 @@ class SafeSession:
             ``TimeoutError``: When either the in-thread or asyncio timeout fires.
             Any exception raised by within the user's code.
         """
-        outcome = await self.async_exec_response(code, timeout=timeout)
+        outcome = await self.async_exec_response(
+            code,
+            input_name=input_name,
+            timeout=timeout,
+        )
         return outcome.result, outcome.output
 
     def reset(self) -> None:
