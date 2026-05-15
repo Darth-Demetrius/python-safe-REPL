@@ -223,7 +223,7 @@ def exec_restricted(
                    ``exec``/``eval``.
         perms: Active execution policy.
         source_filename: Filename attached to compiled user code for traceback
-            rendering.
+            rendering and ``SyntaxError`` messages.
 
     Returns:
         An ``ExecResult`` describing the outcome.

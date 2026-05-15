@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-05-14
+
+### Fixed
+
+- Syntax errors in `respy_repl.SafeSession` now use the execution input filename directly (for example `<discord input>`) instead of leaking internal `<respy input N>` names.
+
+### Changed
+
+- Simplified `respy_repl` traceback filtering to derive user frames directly from traceback structure (frames after the engine `_run` frame), removing extra filename-tracking state used only for formatting.
+- Refactored `respy_repl` exception handling to use structured exception objects in `respy_repl.exceptions` (`ExecutionError`, `UserCodeExecutionError`, `ExecutionTimeoutError`, `ExecutionMemoryLimitError`) instead of mutating built-in exception instances via dynamic attributes.
+- Polished execution-exception metadata naming by standardizing on `source_exception_type` for clearer public error inspection.
+
+### Removed
+
+- Removed legacy `safe_repl` code and tests
+- Removed legacy `safe_repl` package metadata and `safe-repl` CLI entry point from project packaging.
+
 ## [0.8.0] - 2026-05-14
 
 ### Changed
@@ -210,7 +227,8 @@
 - Added unit and integration CLI tests for error handling and flag behavior.
 - Expanded README with API surface, exception handling, execution-mode defaults, internal module split notes, and persistent subprocess lifecycle examples.
 
-[Unreleased]: https://github.com/Darth-Demetrius/python-sub-REPL/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/Darth-Demetrius/python-sub-REPL/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.8.1
 [0.8.0]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.8.0
 [0.7.1]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.7.1
 [0.7.0]: https://github.com/Darth-Demetrius/python-sub-REPL/releases/tag/v0.7.0

@@ -1,11 +1,10 @@
 [tool.poetry]
 name = "safe-repl"
-version = "0.8.0"
+version = "0.8.1"
 description = "Safe REPL with tiered permission levels for restricted Python execution"
 authors = ["Your Name <you@example.com>"]
 readme = "README.md"
 packages = [
-	{ include = "safe_repl" },
 	{ include = "respy_repl" },
 ]
 
@@ -15,7 +14,6 @@ cloudpickle = "^3.1.1"
 RestrictedPython = ">=7.4"
 
 [tool.poetry.scripts]
-safe-repl = "safe_repl:main"
 respy-repl = "respy_repl:main"
 
 [tool.poetry.group.dev.dependencies]

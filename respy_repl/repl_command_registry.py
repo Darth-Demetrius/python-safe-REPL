@@ -1,7 +1,7 @@
 """Decorator-based REPL command registry for the RestrictedPython REPL.
 
 Functionally identical to the original ``safe_repl.repl_command_registry``; the
-only change is updated forward-references to ``ResPy_session.SafeSession``.
+only change is updated forward-references to ``respy_repl.session.SafeSession``.
 """
 
 from __future__ import annotations

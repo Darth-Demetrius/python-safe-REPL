@@ -8,7 +8,7 @@ tracking here; ``Permissions`` focuses on:
 * Which builtins are available in the execution context.
 * Timeout and memory limits.
 * Import specifications.
-* Building the ``restricted_globals`` dict consumed by ``ResPy_engine``.
+* Building the ``restricted_globals`` dict consumed by ``respy_repl.engine``.
 """
 
 from __future__ import annotations
@@ -21,9 +21,9 @@ from functools import total_ordering
 from typing import Any, Optional
 import warnings
 
+from .exceptions import SafeReplImportError
 from .imports import (
     NormalizedImportSpec,
-    SafeReplImportError,
     collect_import_symbols,
     imports_union,
     make_import_guard,

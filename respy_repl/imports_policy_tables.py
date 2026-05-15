@@ -4,7 +4,7 @@ Structure mirrors the original ``safe_repl.imports_policy_tables``:
     DEFAULT_IMPORTS_ALLOW[module][level] = {'*'} | {symbol, ...}
     DEFAULT_IMPORTS_BLOCK[module][level] = {symbol, ...}
 
-Levels are cumulative - the validator collects all rules from level 1 up to
+Levels are cumulative - the import guard collects all rules from level 1 up to
 and including the session level.  A ``{'*'}`` in the allow table means "all
 public symbols from this module are allowed at this level."
 
@@ -20,6 +20,7 @@ Threat tiers (same annotation as original):
 
 DEFAULT_IMPORTS_ALLOW: dict[str, dict[int, set[str]]] = {}
 DEFAULT_IMPORTS_BLOCK: dict[str, dict[int, set[str]]] = {}
+IMPORT_POLICY_CATEGORIES: dict[str, set[str]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +64,23 @@ DEFAULT_IMPORTS_ALLOW["enum"] = {1: {"*"}}
 DEFAULT_IMPORTS_ALLOW["graphlib"] = {1: {"*"}}
 DEFAULT_IMPORTS_BLOCK["graphlib"] = {1: {"TopologicalSorter"}}
 
+IMPORT_POLICY_CATEGORIES["Core Python: Data Types"] = {
+    "datetime",
+    "zoneinfo",
+    "calendar",
+    "collections",
+    "collections.abc",
+    "heapq",
+    "bisect",
+    "array",
+    "weakref",
+    "types",
+    "copy",
+    "pprint",
+    "reprlib",
+    "enum",
+    "graphlib",
+}
 
 # ---------------------------------------------------------------------------
 # Core Python – Numeric and Mathematical
@@ -75,6 +93,9 @@ DEFAULT_IMPORTS_ALLOW["fractions"] = {1: {"*"}}
 DEFAULT_IMPORTS_ALLOW["random"] = {1: {"*"}}
 DEFAULT_IMPORTS_ALLOW["statistics"] = {1: {"*"}}
 
+IMPORT_POLICY_CATEGORIES["Core Python: Numeric and Mathematical"] = {
+    "numbers", "math", "cmath", "decimal", "fractions", "random", "statistics"
+}
 
 # ---------------------------------------------------------------------------
 # Core Python – Functional Programming
@@ -83,6 +104,9 @@ DEFAULT_IMPORTS_ALLOW["itertools"] = {2: {"*"}}
 DEFAULT_IMPORTS_ALLOW["functools"] = {2: {"*"}}
 DEFAULT_IMPORTS_ALLOW["operator"] = {3: {"*"}}
 
+IMPORT_POLICY_CATEGORIES["Core Python: Functional Programming"] = {
+    "itertools", "functools", "operator"
+}
 
 # ---------------------------------------------------------------------------
 # Core Python – Internet Data / Multimedia / i18n
@@ -93,10 +117,15 @@ DEFAULT_IMPORTS_ALLOW["colorsys"] = {3: {"*"}}
 DEFAULT_IMPORTS_ALLOW["gettext"] = {3: {"*"}}
 DEFAULT_IMPORTS_ALLOW["locale"] = {3: {"*"}}
 
+IMPORT_POLICY_CATEGORIES["Core Python: Internet Data / Multimedia / i18n"] = {
+    "json", "wave", "colorsys", "gettext", "locale"
+}
 
 # ---------------------------------------------------------------------------
-# Third-party – NumPy
+# Third-party
 # ---------------------------------------------------------------------------
+
+# NumPy
 DEFAULT_IMPORTS_ALLOW["numpy"] = {1: {"*"}}
 DEFAULT_IMPORTS_BLOCK["numpy"] = {
     3: {
@@ -108,19 +137,13 @@ DEFAULT_IMPORTS_BLOCK["numpy"] = {
     1: {"fft", "linalg", "polynomial", "char"},
 }
 
-
-# ---------------------------------------------------------------------------
-# Third-party – Matplotlib
-# ---------------------------------------------------------------------------
+# Matplotlib
 DEFAULT_IMPORTS_ALLOW["matplotlib"] = {2: {"*"}}
 DEFAULT_IMPORTS_BLOCK["matplotlib"] = {
     3: {"backends", "backend_bases", "use"},
 }
 
-
-# ---------------------------------------------------------------------------
-# Third-party – SciPy
-# ---------------------------------------------------------------------------
+# SciPy
 DEFAULT_IMPORTS_ALLOW["scipy"] = {1: {"*"}}
 DEFAULT_IMPORTS_BLOCK["scipy"] = {
     3: {"datasets", "io"},
@@ -131,10 +154,7 @@ DEFAULT_IMPORTS_BLOCK["scipy"] = {
     },
 }
 
-
-# ---------------------------------------------------------------------------
-# Third-party – SymPy
-# ---------------------------------------------------------------------------
+# SymPy
 DEFAULT_IMPORTS_ALLOW["sympy"] = {1: {"*"}}
 DEFAULT_IMPORTS_BLOCK["sympy"] = {
     3: {"codegen", "core.sympify", "external", "parsing"},
@@ -148,11 +168,10 @@ DEFAULT_IMPORTS_BLOCK["sympy"] = {
     },
 }
 
-# ---------------------------------------------------------------------------
-# Third-party – MyDyce
-# ---------------------------------------------------------------------------
+# MyDyce
 DEFAULT_IMPORTS_ALLOW["MyDyce"] = {1: {"*"}}
 
 
-
-# print( str(list(DEFAULT_IMPORTS_ALLOW.keys())[-4:])[1:-1].replace("'", "").replace(",", "") )
+IMPORT_POLICY_CATEGORIES["Third-party"] = {
+        "numpy", "matplotlib", "scipy", "sympy", "MyDyce"
+    }

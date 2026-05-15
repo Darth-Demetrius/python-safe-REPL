@@ -6,7 +6,7 @@ other applications, including Discord bots.
 Key differences from the original ``safe_repl.session``
 ---------------------------------------------------------
 * **No subprocess / worker process.**  Execution happens in-process via
-  ``ResPy_engine.exec_restricted``, using RestrictedPython's compile-time
+    ``respy_repl.engine.exec_restricted``, using RestrictedPython's compile-time
   code transformation and thread-based timeout.
 * **``exec()`` returns ``(result, output)``** for backward-compatible text
     flows, while ``exec_response()`` returns the full ``ExecResult`` (including
@@ -29,6 +29,12 @@ import pickle
 import cloudpickle
 
 from .engine import DisplayArtifact, ExecResult, _code_preview, exec_restricted
+from .exceptions import (
+    ExecutionError,
+    ExecutionMemoryLimitError,
+    ExecutionTimeoutError,
+    UserCodeExecutionError,
+)
 from .imports import NormalizedImportSpec
 from .policy import PermissionLevel, Permissions
 from .repl_command_registry import CommandRegistry
@@ -38,43 +44,47 @@ _DEFAULT_USER_TRACEBACK_FILENAME = "<repl input>"
 
 def _iter_user_traceback_frames(
     exc: BaseException,
-    *,
-    filename_map: Mapping[str, str],
 ) -> list[tuple[str, int, str]]:
-    """Return user-code traceback frames as ``(display_name, line, function)``."""
-    frames: list[tuple[str, int, str]] = []
+    """Return user traceback frames as ``(filename, line, function)``.
+
+    Frames are included only after the engine execution boundary frame
+    (``respy_repl/engine.py`` in ``_run``), which separates host/runtime
+    frames from user-compiled code frames.
+    """
     tb = exc.__traceback__
+    include_user_frames = False
+    user_frames: list[tuple[str, int, str]] = []
+
     while tb is not None:
         code = tb.tb_frame.f_code
-        display_name = filename_map.get(code.co_filename)
-        if display_name is not None:
-            frames.append((display_name, tb.tb_lineno, code.co_name))
+        frame = (code.co_filename, tb.tb_lineno, code.co_name)
+        if include_user_frames:
+            user_frames.append(frame)
+        elif code.co_filename.endswith("/respy_repl/engine.py") and code.co_name == "_run":
+            include_user_frames = True
         tb = tb.tb_next
-    return frames
+
+    return user_frames
 
 
 def _format_user_traceback_message(
     exc: BaseException,
-    *,
-    filename_map: Mapping[str, str],
 ) -> str:
     """Format an exception with traceback frames limited to user code.
 
     Args:
         exc: Exception to render.
-        filename_map: Mapping from internal code-object filenames to
-            user-facing display labels.
 
     Returns:
         A traceback-like message suitable for user-facing display.
     """
     lines: list[str] = []
-    user_frames = _iter_user_traceback_frames(exc, filename_map=filename_map)
+    user_frames = _iter_user_traceback_frames(exc)
     if user_frames:
         lines.append("Traceback (most recent call last):")
-        for display_name, line_no, function_name in user_frames:
+        for filename, line_no, function_name in user_frames:
             lines.append(
-                f'  File "{display_name}", line {line_no}, in {function_name}'
+                f'  File "{filename}", line {line_no}, in {function_name}'
             )
 
     rendered_exception_only = "".join(
@@ -88,61 +98,21 @@ def _format_user_traceback_message(
     return "\n".join(lines)
 
 
-def _attach_user_traceback_message(
+def _build_user_code_execution_error(
     exc: BaseException,
     *,
-    filename_map: Mapping[str, str],
-) -> BaseException:
-    """Attach a user-facing traceback message to ``exc`` and return it."""
-    original_message = str(exc)
-    formatted_message = _format_user_traceback_message(
-        exc,
-        filename_map=filename_map,
+    output: str,
+    display_artifacts: list[DisplayArtifact],
+) -> UserCodeExecutionError:
+    """Build a typed execution error for non-timeout/non-memory failures."""
+    formatted_message = _format_user_traceback_message(exc)
+    return UserCodeExecutionError(
+        formatted_message,
+        output=output,
+        display_artifacts=display_artifacts,
+        original_exception=exc,
+        source_exception_type=type(exc).__name__,
     )
-    setattr(exc, "original_message", original_message)
-    setattr(exc, "formatted_user_traceback", formatted_message)
-    exc.args = (formatted_message,)
-    return exc
-
-
-class ExecutionTimeoutError(TimeoutError):
-    """Timeout error carrying partial execution output.
-
-    Attributes:
-        output: Captured text output generated before timeout.
-        display_artifacts: Captured rich artifacts generated before timeout.
-    """
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        output: str = "",
-        display_artifacts: list[DisplayArtifact] | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.output = output
-        self.display_artifacts = list(display_artifacts or [])
-
-
-class ExecutionMemoryLimitError(MemoryError):
-    """Memory-limit error carrying partial execution output.
-
-    Attributes:
-        output: Captured text output generated before memory-limit failure.
-        display_artifacts: Captured rich artifacts generated before failure.
-    """
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        output: str = "",
-        display_artifacts: list[DisplayArtifact] | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.output = output
-        self.display_artifacts = list(display_artifacts or [])
 
 
 class SafeSession:
@@ -154,8 +124,8 @@ class SafeSession:
         identifier: Optional host-owned identifier reserved for embedding use.
         command_registry: Optional custom command registry; defaults to the
             built-in ``CommandRegistry``.
-        user_traceback_filename: User-facing filename label shown in formatted
-            traceback output for user-code frames.
+        user_traceback_filename: Default filename attached to compiled user
+            snippets when ``input_name`` is not provided.
     """
 
     def __init__(
@@ -171,8 +141,6 @@ class SafeSession:
         self.user_vars: dict[str, object] = user_vars or {}
         self.command_registry = command_registry or CommandRegistry()
         self.user_traceback_filename = user_traceback_filename
-        self._traceback_filename_map: dict[str, str] = {}
-        self._input_counter = 0
         self._cache_startup_summaries()
 
     # ------------------------------------------------------------------
@@ -180,10 +148,12 @@ class SafeSession:
     # ------------------------------------------------------------------
 
     _CLOUDPICKLE_MARKER: str = "__respy_cloudpickle__"
-    _SOURCE_FILENAME_PREFIX: str = "<respy input "
-
     def _resolve_input_name(self, input_name: str | None) -> str:
-        """Return the display label to use for one execution input."""
+        """Resolve the per-input source filename for compilation.
+
+        Blank/whitespace-only values fall back to
+        ``self.user_traceback_filename``.
+        """
         if isinstance(input_name, str):
             stripped = input_name.strip()
             if stripped:
@@ -191,17 +161,8 @@ class SafeSession:
         return self.user_traceback_filename
 
     def _register_input_filename(self, *, input_name: str | None) -> str:
-        """Create and store an internal filename for one execution input."""
-        self._input_counter += 1
-        internal_filename = f"{self._SOURCE_FILENAME_PREFIX}{self._input_counter}>"
-        self._traceback_filename_map[internal_filename] = self._resolve_input_name(input_name)
-        return internal_filename
-
-    def _build_traceback_filename_map(self) -> dict[str, str]:
-        """Build the filename map used for user-facing traceback rendering."""
-        resolver = dict(self._traceback_filename_map)
-        resolver.setdefault("<string>", self.user_traceback_filename)
-        return resolver
+        """Return the filename attached to one execution input."""
+        return self._resolve_input_name(input_name)
 
     def to_relaunch_data(self) -> dict[str, object]:
         """Return a picklable payload re-creating this session.
@@ -235,8 +196,6 @@ class SafeSession:
             "perms": self.perms.to_relaunch_data(),
             "user_vars": serialisable_vars,
             "user_traceback_filename": self.user_traceback_filename,
-            "traceback_filename_map": dict(self._traceback_filename_map),
-            "input_counter": self._input_counter,
         }
 
     @classmethod
@@ -255,8 +214,6 @@ class SafeSession:
             "user_traceback_filename",
             _DEFAULT_USER_TRACEBACK_FILENAME,
         )
-        traceback_filename_map_raw = payload.get("traceback_filename_map", {})
-        input_counter_raw = payload.get("input_counter", 0)
         command_registry = payload.get("command_registry", None)
 
         if isinstance(user_vars_raw, dict):
@@ -281,29 +238,12 @@ class SafeSession:
             if isinstance(user_traceback_filename_raw, str)
             else _DEFAULT_USER_TRACEBACK_FILENAME
         )
-        traceback_filename_map = (
-            {
-                str(internal): str(display)
-                for internal, display in traceback_filename_map_raw.items()
-                if isinstance(internal, str) and isinstance(display, str)
-            }
-            if isinstance(traceback_filename_map_raw, dict)
-            else {}
-        )
-        input_counter = (
-            input_counter_raw
-            if isinstance(input_counter_raw, int) and input_counter_raw >= 0
-            else 0
-        )
-
         session = cls(
             perms=Permissions.from_relaunch_data(perms_payload),  # type: ignore[arg-type]
             user_vars=user_vars,
             command_registry=command_registry,
             user_traceback_filename=user_traceback_filename,
         )
-        session._traceback_filename_map = traceback_filename_map
-        session._input_counter = input_counter
         return session
 
     def __getstate__(self) -> dict[str, object]:
@@ -322,17 +262,19 @@ class SafeSession:
 
         Args:
             code: Raw Python source string.
-            input_name: Optional user-facing label for this execution input.
+            input_name: Optional filename attached to this snippet at compile
+                time. If omitted/blank, ``user_traceback_filename`` is used.
 
         Returns:
             Full execution response including result, text output, and rich
             display artifacts.
 
         Raises:
-            The exception raised by the user's code (re-raised verbatim).
-            ``SyntaxError`` when the source cannot be compiled.
-            ``TimeoutError`` when the execution timeout is exceeded.
-            ``MemoryError`` when the memory limit is exceeded.
+            UserCodeExecutionError: For user-code exceptions other than
+                timeout and memory failures.
+            SyntaxError: When the source cannot be compiled.
+            ExecutionTimeoutError: When the execution timeout is exceeded.
+            ExecutionMemoryLimitError: When the memory limit is exceeded.
         """
         source_filename = self._register_input_filename(input_name=input_name)
         outcome: ExecResult = exec_restricted(
@@ -358,17 +300,20 @@ class SafeSession:
                     detail,
                     output=outcome.output,
                     display_artifacts=outcome.display_artifacts,
+                    original_exception=outcome.exception,
                 ) from outcome.exception
             if isinstance(outcome.exception, MemoryError):
                 raise ExecutionMemoryLimitError(
                     str(outcome.exception),
                     output=outcome.output,
                     display_artifacts=outcome.display_artifacts,
+                    original_exception=outcome.exception,
                 ) from outcome.exception
-            raise _attach_user_traceback_message(
+            raise _build_user_code_execution_error(
                 outcome.exception,
-                filename_map=self._build_traceback_filename_map(),
-            )
+                output=outcome.output,
+                display_artifacts=outcome.display_artifacts,
+            ) from outcome.exception
         return outcome
 
     def exec(self, code: str, *, input_name: str | None = None) -> tuple[object | None, str]:
@@ -379,7 +324,8 @@ class SafeSession:
 
         Args:
             code: Raw Python source string.
-            input_name: Optional user-facing label for this execution input.
+            input_name: Optional filename attached to this snippet at compile
+                time. If omitted/blank, ``user_traceback_filename`` is used.
 
         Returns:
             A ``(result, output)`` tuple where *result* is the value of the
@@ -387,10 +333,11 @@ class SafeSession:
             text emitted by ``print()`` calls.
 
         Raises:
-            The exception raised by the user's code (re-raised verbatim).
-            ``SyntaxError`` when the source cannot be compiled.
-            ``TimeoutError`` when the execution timeout is exceeded.
-            ``MemoryError`` when the memory limit is exceeded.
+            UserCodeExecutionError: For user-code exceptions other than
+                timeout and memory failures.
+            SyntaxError: When the source cannot be compiled.
+            ExecutionTimeoutError: When the execution timeout is exceeded.
+            ExecutionMemoryLimitError: When the memory limit is exceeded.
         """
         outcome = self.exec_response(code, input_name=input_name)
         return outcome.result, outcome.output
@@ -406,7 +353,8 @@ class SafeSession:
 
         Args:
             code: Raw Python source string.
-            input_name: Optional user-facing label for this execution input.
+            input_name: Optional filename attached to this snippet at compile
+                time. If omitted/blank, ``user_traceback_filename`` is used.
             timeout: Optional asyncio-level timeout in seconds.  Defaults to the
                 session's ``perms.timeout_seconds`` plus a grace window when
                 not specified, allowing the in-thread timeout mechanism to fire
@@ -445,7 +393,10 @@ class SafeSession:
                     detail += f" Session timeout is {self.perms.timeout_seconds:.3f}s."
                 if preview:
                     detail += f" Code preview: {preview!r}."
-                raise ExecutionTimeoutError(detail) from exc
+                raise ExecutionTimeoutError(
+                    detail,
+                    original_exception=exc,
+                ) from exc
         return await task
 
     async def async_exec(
@@ -470,7 +421,8 @@ class SafeSession:
 
         Args:
             code: Raw Python source string.
-            input_name: Optional user-facing label for this execution input.
+            input_name: Optional filename attached to this snippet at compile
+                time. If omitted/blank, ``user_traceback_filename`` is used.
             timeout: Optional asyncio-level timeout in seconds.  Defaults to the
                 session's ``perms.timeout_seconds`` plus a grace window when
                 not specified, allowing the in-thread timeout mechanism to fire
@@ -569,6 +521,11 @@ class SafeSession:
                 result = execute(line)
                 if result is not None:
                     print(repr(result))
+            except ExecutionError as error:
+                if error.output:
+                    print(error.output, end="")
+                label = error.source_exception_type or type(error).__name__
+                print(f"Error: {label}: {error}")
             except Exception as error:
                 print(f"Error: {type(error).__name__}: {error}")
 
@@ -610,5 +567,4 @@ class SafeSession:
             f"  {name}{' = ' + repr(value) if include_values else ': ' + type(value).__name__}"
             for name, value in sorted(self.user_vars.items())
         )
-        #print(rendered)
         return rendered

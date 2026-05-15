@@ -4,20 +4,24 @@ Safe Python REPL with tiered permission levels for restricted code execution.
 
 ## Overview
 
-`safe-repl` provides a process-isolated Python REPL and API for executing untrusted code with configurable permission levels, import controls, and resource limits. All execution is process-isolated for safety. The public API is re-exported from focused internal modules.
-
-The repository also includes `respy_repl`, a RestrictedPython-based variant designed for in-process execution scenarios (for example, async bot command handlers) where process-based isolation is not required.
+As of `0.8.1`, the project ships the `respy_repl` backend only.
+Legacy `safe_repl` process-isolated modules were removed.
 
 For `respy_repl`, `SafeSession.exec(...)` and `SafeSession.async_exec(...)` return `(result, output)`, where `output` contains captured `print(...)` text from the executed snippet.
 When you need rich outputs (for example matplotlib figures), use `SafeSession.exec_response(...)` or `SafeSession.async_exec_response(...)` and read `response.display_artifacts`.
-When user code raises, `respy_repl.SafeSession` now formats exceptions to include only user-code frames (shown as `<repl input>` by default), plus exception notes (`__notes__`) such as Python hints.
+When user code raises, `respy_repl.SafeSession` raises typed exceptions from `respy_repl.exceptions` instead of mutating built-in exceptions in place.
+Non-timeout/non-memory failures are raised as `UserCodeExecutionError` with a user-formatted traceback (only user-code frames), plus exception notes (`__notes__`) such as Python hints.
+Syntax errors use the same internal filename configured for that execution input (for example `<discord input>`).
 You can customize the displayed filename via `SafeSession(..., user_traceback_filename="<your label>")`.
 For per-snippet labels, pass `input_name` to `exec(...)` / `exec_response(...)` (and async variants). Empty or whitespace-only `input_name` values fall back to `<repl input>`. This allows mixed-frame tracebacks when one snippet calls a function defined in another snippet.
-Function traceback labels are stable across session pickle/relaunch because the label metadata is attached to the compiled function code object and persisted with serialized session state.
+Traceback frame filtering is based on traceback structure: user frames start immediately after the engine execution shim frame (`respy_repl/engine.py` in `_run`). No extra filename-mapping state is tracked for formatting.
+Function traceback labels are stable across session pickle/relaunch because the filename metadata is attached to compiled function code objects.
 When a `respy_repl` execution times out, `SafeSession.exec_response(...)` and `SafeSession.async_exec_response(...)` raise `ExecutionTimeoutError`, which includes partial `output` and `display_artifacts` generated before timeout.
 Timeout exception messages include the effective timeout duration and a short code preview to make timeout failures easier to diagnose.
 If an asyncio-level timeout fires before the in-thread timeout path completes, partial output may be unavailable.
 When a `respy_repl` execution exceeds `memory_limit_bytes`, these response-oriented APIs raise `ExecutionMemoryLimitError`, which also includes partial `output` and `display_artifacts` generated before the memory-limit failure.
+All execution exceptions share a common base class: `ExecutionError`.
+For wrapped user-code failures, inspect `source_exception_type` to identify the original exception class name.
 
 Example:
 
@@ -51,10 +55,11 @@ except Exception as exc:
 ## Public API
 
 - `PermissionLevel`, `Permissions`, `SafeSession`, `CommandRegistry`
-- `safe_exec`, `validate_ast`, `main`
-- `SafeReplImportError`, `SafeReplCliArgError`
+- `ExecutionError`, `UserCodeExecutionError`, `ExecutionTimeoutError`, `ExecutionMemoryLimitError`
+- `exec_restricted`, `ExecResult`, `DisplayArtifact`, `main`
+- `SafeReplError`, `SafeReplImportError`, `SafeReplCliArgError`
 
-Submodules (such as `safe_repl.policy`, `safe_repl.engine`, `safe_repl.validator`, etc.) are implementation details and may change.
+Submodules are implementation details and may change.
 
 ## Install
 
@@ -73,12 +78,12 @@ pip install -e .
 ## Import in another project
 
 ```python
-from safe_repl import PermissionLevel, Permissions, SafeSession
+from respy_repl import PermissionLevel, Permissions, SafeSession
 import io
 import contextlib
 
 perms = Permissions(
-    perm_level=PermissionLevel.CONTROLLED,
+  PermissionLevel.CONTROLLED,
     imports=["numpy:sum", "math:sqrt as root"],
 )
 
@@ -96,12 +101,12 @@ print(captured)  # '6.0'
 
 - `PermissionLevel`: Enum of permission levels: `NONE`, `RESTRICTED`, `CONTROLLED`, `TRUSTED`. Invalid values warn and default to `NONE`.
 - `Permissions`: Policy object for execution and REPL. Supports per-instance overrides for `timeout_seconds` and `memory_limit_bytes` via `set_limits()`.
-- `SafeSession`: Stateful executor that keeps `user_vars` across calls. All execution is process-isolated.
+- `SafeSession`: Stateful executor that keeps `user_vars` across calls.
 - `CommandRegistry`: Decorator-based registry for custom REPL commands.
-- `safe_exec`: Low-level stateless execution function.
-- `validate_ast`: AST validation helper.
+- `exec_restricted`: Low-level stateless execution function.
 - `main`: CLI entrypoint.
-- `SafeReplImportError`, `SafeReplCliArgError`: Exception types for import and CLI errors.
+- `SafeReplError`, `SafeReplImportError`, `SafeReplCliArgError`: User-facing input/CLI exception hierarchy.
+- `ExecutionError` family: Execution exceptions with partial output and source exception metadata.
 
 ### Permission-level attribute access
 
@@ -114,10 +119,10 @@ print(captured)  # '6.0'
 ```python
 import pickle
 
-from safe_repl import PermissionLevel, Permissions, SafeSession
+from respy_repl import PermissionLevel, Permissions, SafeSession
 
 session = SafeSession(
-    Permissions(perm_level=PermissionLevel.CONTROLLED, imports=["math:sqrt as root"]),
+  Permissions(PermissionLevel.CONTROLLED, imports=["math:sqrt as root"]),
     user_vars={"x": 25},
 )
 
@@ -145,11 +150,6 @@ pip install -e .
 Run REPL:
 
 ```bash
-safe-repl
-# or
-python -m safe_repl
-
-# RestrictedPython variant
 respy-repl
 # or
 python -m respy_repl
@@ -158,8 +158,8 @@ python -m respy_repl
 ## Usage Example
 
 ```python
-from safe_repl import PermissionLevel, Permissions, SafeSession
-perms = Permissions(perm_level=PermissionLevel.CONTROLLED, imports=["math:*"])
+from respy_repl import PermissionLevel, Permissions, SafeSession
+perms = Permissions(PermissionLevel.CONTROLLED, imports=["math:*"])
 session = SafeSession(perms)
 print(session.exec("2 + 3 * 4"))  # 14
 ```
@@ -169,8 +169,7 @@ print(session.exec("2 + 3 * 4"))  # 14
 - `--level LEVEL` — Permission level: RESTRICTED/1, CONTROLLED/2 (default), TRUSTED/3
 - `--import SPEC` — Import module/spec (e.g. `math:*`, disables default if used)
 - `--allow-functions ...` / `--block-functions ...` — Add/remove builtins
-- `--allow-nodes ...` / `--block-nodes ...` — Add/remove AST nodes
-- `--list-functions` / `--list-nodes` — Show allowed functions/nodes and exit
+- `--list-functions` — Show allowed functions and exit
 
 ## REPL Commands
 
@@ -178,7 +177,6 @@ print(session.exec("2 + 3 * 4"))  # 14
 - `:help <command>` — Show help
 - `:level` — Print permission level
 - `:functions` — Print available functions
-- `:nodes` — Print allowed AST nodes
 - `:imports` — Print imported symbols
 - `:vars` — Print user variable names
 - `:vars values` — Print user variables with values
@@ -186,23 +184,23 @@ print(session.exec("2 + 3 * 4"))  # 14
 ## Embedding & Custom Commands
 
 ```python
-from safe_repl import PermissionLevel, Permissions, SafeSession
-from safe_repl.repl_command_registry import CommandRegistry
+from respy_repl import PermissionLevel, Permissions, SafeSession
+from respy_repl.repl_command_registry import CommandRegistry
 registry = CommandRegistry("!")
 @registry.command("ping", help_text="Use '{0}ping' to print pong.")
 def ping_command(_args, _session): print("pong")
-session = SafeSession(Permissions(perm_level=PermissionLevel.CONTROLLED), command_registry=registry)
+session = SafeSession(Permissions(PermissionLevel.CONTROLLED), command_registry=registry)
 session.repl()
 ```
 
 ## Error Handling
 
-| error_type   | Exception type      | Meaning                                      |
-| ------------ | ------------------ | --------------------------------------------- |
-| validation   | `ValueError`       | Input rejected by AST/safety validation       |
-| timeout      | `TimeoutError`     | Execution exceeded configured timeout         |
-| runtime      | `RuntimeError`     | Policy/runtime failure (e.g. memory exceeded) |
-| user_code    | any other          | Exception raised by executed user code        |
+| error_type   | Exception type                  | Meaning                                        |
+| ------------ | ------------------------------- | ---------------------------------------------- |
+| validation   | `SafeReplInputError` subclasses | Input rejected by import/CLI validation        |
+| timeout      | `ExecutionTimeoutError`         | Execution exceeded configured timeout          |
+| memory       | `ExecutionMemoryLimitError`     | Execution exceeded configured memory limit     |
+| user_code    | `UserCodeExecutionError`        | User exception with filtered traceback details |
 
 ## TODO
 
@@ -213,7 +211,7 @@ session.repl()
 
 ## Sandbox upgrade paths
 
-Current process isolation improves containment, but stronger boundaries can be added in layers.
+Current in-process RestrictedPython controls can be strengthened with additional isolation layers at the host level.
 The most promising near-term options are Linux namespaces and microVM execution.
 
 - Replace denylist-heavy `TRUSTED` policy behavior with a capability/profile-based model.
@@ -232,5 +230,5 @@ The most promising near-term options are Linux namespaces and microVM execution.
 ## Notes
 
 - Distribution/package name: `safe-repl`
-- Python import name: `safe_repl`
+- Python import name: `respy_repl`
 - See `CHANGELOG.md` for recent API and behavior changes.

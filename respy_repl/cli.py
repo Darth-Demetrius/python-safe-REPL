@@ -2,8 +2,8 @@
 
 Usage examples::
 
-    python -m safe_repl.ResPy___main__
-    python -c "from safe_repl.ResPy_cli import main; main()"
+    python -m respy_repl
+    python -c "from respy_repl.cli import main; main()"
 
 Compared to the original CLI, the ``--allow-nodes`` / ``--block-nodes`` flags
 are removed because RestrictedPython manages AST-level restrictions at compile
@@ -15,7 +15,8 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .imports import SafeReplCliArgError, SafeReplImportError, validate_cli_args
+from .exceptions import SafeReplCliArgError, SafeReplImportError
+from .imports import validate_cli_args
 from .session import SafeSession
 
 

@@ -19,6 +19,7 @@ import builtins
 import importlib
 from typing import TYPE_CHECKING
 
+from .exceptions import SafeReplCliArgError, SafeReplImportError
 from .imports_policy_tables import DEFAULT_IMPORTS_ALLOW, DEFAULT_IMPORTS_BLOCK
 
 if TYPE_CHECKING:
@@ -26,18 +27,6 @@ if TYPE_CHECKING:
 
 # ``{ (module_name, module_alias): {(import_name, import_alias), ...}, ... }``
 NormalizedImportSpec = dict[tuple[str, str], set[tuple[str, str]]]
-
-
-# ---------------------------------------------------------------------------
-# Exceptions
-# ---------------------------------------------------------------------------
-
-class SafeReplImportError(ValueError):
-    """Raised when an import spec cannot be resolved or is disallowed."""
-
-
-class SafeReplCliArgError(ValueError):
-    """Raised when CLI arguments are invalid (e.g. bad node names)."""
 
 
 # ---------------------------------------------------------------------------
